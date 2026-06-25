@@ -69,7 +69,10 @@ export const passwordStrength = (pw = '') => {
  */
 export const exportToCsv = (filename, rows, columns) => {
   const escape = (v) => {
-    const s = v === null || v === undefined ? '' : String(v);
+    let s = v === null || v === undefined ? '' : String(v);
+    // Neutralise CSV/formula injection: a cell starting with = + - @ (or a
+    // control char) can execute as a formula when opened in Excel/Sheets.
+    if (/^[=+\-@\t\r]/.test(s)) s = `'${s}`;
     return /[",\n]/.test(s) ? `"${s.replace(/"/g, '""')}"` : s;
   };
   const header = columns.map((c) => escape(c.label)).join(',');

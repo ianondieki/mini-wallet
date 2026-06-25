@@ -23,10 +23,31 @@ import {
  *
  * @route POST /api/mpesa/topup
  */
+const TOPUP_DEDUPE_WINDOW_MS = 60 * 1000;
+
 export const stkPush = asyncHandler(async (req, res) => {
   const amount = Number(req.body.amount);
   const phone = formatPhone(req.body.phone);
   if (!phone) throw new AppError('Invalid phone number', 400, 'INVALID_PHONE');
+
+  // Guard against accidental double-submits (double-click / retry): if an
+  // identical top-up is already pending for this user, don't fire a second
+  // STK push that could charge them twice.
+  const inFlight = await Transaction.findOne({
+    receiver: req.userId,
+    type: 'topup',
+    status: 'pending',
+    amount,
+    phone,
+    createdAt: { $gte: new Date(Date.now() - TOPUP_DEDUPE_WINDOW_MS) },
+  }).lean();
+  if (inFlight) {
+    throw new AppError(
+      'A top-up for this amount is already in progress — check your phone.',
+      409,
+      'TOPUP_IN_PROGRESS'
+    );
+  }
 
   const shortCode = process.env.MPESA_SHORT_CODE;
   const timestamp = getTimestamp();
@@ -139,6 +160,25 @@ export const stkCallback = asyncHandler(async (req, res) => {
   );
   const receipt = meta.MpesaReceiptNumber;
 
+  // Reconcile against the amount Safaricom says was actually paid. The user
+  // confirms the exact pushed amount on their handset so these normally match,
+  // but if they ever diverge we trust the PAID amount (never over-credit) and
+  // record the discrepancy for reconciliation.
+  const paidAmount = Number(meta.Amount);
+  const creditAmount =
+    Number.isFinite(paidAmount) && paidAmount > 0 ? paidAmount : txn.amount;
+  if (Number.isFinite(paidAmount) && paidAmount !== txn.amount) {
+    logger.warn('STK callback amount mismatch', {
+      checkoutRequestId,
+      expected: txn.amount,
+      paid: paidAmount,
+    });
+    txn.metadata = {
+      ...(txn.metadata || {}),
+      amountMismatch: { expected: txn.amount, paid: paidAmount },
+    };
+  }
+
   const session = await mongoose.startSession();
   try {
     await session.withTransaction(async () => {
@@ -147,6 +187,7 @@ export const stkCallback = asyncHandler(async (req, res) => {
         { _id: txn._id, status: 'pending' },
         {
           status: 'success',
+          amount: creditAmount,
           mpesaReceiptNumber: receipt,
           metadata: txn.metadata,
         },
@@ -156,12 +197,13 @@ export const stkCallback = asyncHandler(async (req, res) => {
         // We own the credit — apply it once.
         await Wallet.updateOne(
           { user: txn.receiver },
-          { $inc: { balance: txn.amount } },
+          { $inc: { balance: creditAmount } },
           { session }
         );
         logger.info('Wallet credited from top-up', {
           txnId: txn.id,
           userId: txn.receiver.toString(),
+          amount: creditAmount,
           receipt,
         });
       } else {
