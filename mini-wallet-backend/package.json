@@ -9,7 +9,10 @@
   },
   "scripts": {
     "start": "node src/server.js",
-    "dev": "node --watch src/server.js"
+    "dev": "node --watch src/server.js",
+    "test": "node --test",
+    "test:unit": "node --test test/unit/*.test.js",
+    "test:integration": "node --test test/integration/*.test.js"
   },
   "keywords": [
     "mpesa",
@@ -34,5 +37,9 @@
     "mongoose": "^8.8.1",
     "uuid": "^11.0.3",
     "winston": "^3.17.0"
+  },
+  "devDependencies": {
+    "mongodb-memory-server": "^11.2.0",
+    "supertest": "^7.2.2"
   }
 }

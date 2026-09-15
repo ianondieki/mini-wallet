@@ -31,6 +31,19 @@ export const authLimiter = rateLimit({
 });
 
 /**
+ * Refresh endpoint: 30 requests / 15 min per IP. Looser than login (genuine
+ * multi-tab clients rotate often) but still caps abuse of the unauthenticated,
+ * cookie-driven rotation path.
+ */
+export const refreshLimiter = rateLimit({
+  windowMs: 15 * 60 * 1000,
+  max: 30,
+  standardHeaders: true,
+  legacyHeaders: false,
+  handler: limitHandler('RATE_LIMIT_REFRESH'),
+});
+
+/**
  * Payment routes: 10 requests / min keyed PER USER (falls back to IP for
  * unauthenticated edge cases). Must run after `protect`.
  */
