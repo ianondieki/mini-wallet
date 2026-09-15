@@ -1,65 +1,187 @@
-import { Transaction } from '../models/Transaction.js';
+import crypto from 'node:crypto';
+import { IdempotencyRecord } from '../models/IdempotencyRecord.js';
 import { AppError } from '../utils/ApiError.js';
 import { asyncHandler } from '../utils/asyncHandler.js';
-
-const IDEMPOTENCY_WINDOW_MS = 60 * 1000;
+import { logger } from '../config/logger.js';
 
 /**
- * Idempotency guard for money-moving endpoints.
+ * Idempotency for money-moving endpoints.
  *
- * Reads the `Idempotency-Key` header. If a transaction with that key was
- * created by THIS user within the last 60s, the request is treated as a
- * duplicate and the original result is returned instead of executing again.
- * The key is stamped onto `req.idempotencyKey` for the controller to persist.
+ * A client retrying a transfer after a timeout has no way to know whether the
+ * first attempt reached us. Without this, the honest retry is a double
+ * payment. With it, the retry returns the original response.
  *
- * The lookup is scoped to `req.userId` (the sender) so one user's key can
- * never match — and therefore never leak or block — another user's request.
- * Uniqueness is likewise enforced per-sender by the partial index on the
- * Transaction model; this middleware just provides the fast happy-path replay.
+ * The guarantee: **one key, one execution, one answer**, for as long as the
+ * record lives.
  *
- * The header is REQUIRED for transfers/withdrawals — a missing key is a
- * client bug and we fail loudly rather than silently allowing double-spend.
+ * ## How
  *
- * Must run AFTER `protect` so `req.userId` is populated.
+ * 1. Claim the key by inserting a record. The unique index makes this the
+ *    atomic step, so concurrent retries cannot both proceed.
+ * 2. If the claim fails, the key already exists:
+ *    - different request body → 422, a client bug worth surfacing;
+ *    - still running → 409, tell them to retry shortly;
+ *    - finished → replay the stored response verbatim.
+ * 3. On completion, store the response.
+ *
+ * ## The 5xx nuance
+ *
+ * A completed record is kept for 4xx responses — a validation failure is
+ * deterministic, so replaying it is correct. It is **released** for 5xx and
+ * for thrown errors, because those may be transient and the client must be
+ * able to genuinely retry. Pinning a server error to the key would make a
+ * recoverable blip permanent for that request.
  */
-export const idempotency = asyncHandler(async (req, res, next) => {
-  const key = req.get('Idempotency-Key');
-  if (!key) {
-    throw new AppError(
-      'Idempotency-Key header is required for this operation',
-      400,
-      'IDEMPOTENCY_KEY_REQUIRED'
-    );
-  }
-  if (!/^[\w-]{8,128}$/.test(key)) {
-    throw new AppError('Malformed Idempotency-Key', 400, 'IDEMPOTENCY_KEY_INVALID');
+
+/** How long a key is honoured. Stripe uses 24h; matching it is uncontroversial. */
+const RETENTION_MS = 24 * 60 * 60 * 1000;
+
+/** Stable hash of the request payload. */
+const hashRequest = (req) =>
+  crypto
+    .createHash('sha256')
+    .update(JSON.stringify(req.body ?? {}))
+    .digest('hex');
+
+/**
+ * @param {object} [options]
+ * @param {boolean} [options.required]  Reject a request with no key (default true).
+ * @returns {import('express').RequestHandler}
+ */
+export const idempotency = ({ required = true } = {}) =>
+  asyncHandler(async (req, res, next) => {
+    const key = req.get('Idempotency-Key');
+
+    if (!key) {
+      if (!required) return next();
+      throw new AppError(
+        'Idempotency-Key header is required for this operation',
+        400,
+        'IDEMPOTENCY_KEY_REQUIRED'
+      );
+    }
+    if (!/^[\w-]{8,128}$/.test(key)) {
+      throw new AppError('Malformed Idempotency-Key', 400, 'IDEMPOTENCY_KEY_INVALID');
+    }
+    if (!req.userId) {
+      // Scoping depends on the authenticated user; running unscoped would let
+      // one customer's key collide with another's.
+      throw new AppError('Idempotency requires authentication', 401, 'NO_TOKEN');
+    }
+
+    const endpoint = `${req.method} ${req.baseUrl}${req.route?.path ?? req.path}`;
+    const requestHash = hashRequest(req);
+
+    try {
+      await IdempotencyRecord.create({
+        key,
+        userId: req.userId,
+        endpoint,
+        requestHash,
+        status: 'in_progress',
+        expiresAt: new Date(Date.now() + RETENTION_MS),
+      });
+    } catch (err) {
+      if (err?.code !== 11000) throw err;
+      return replayOrReject({ req, res, key, endpoint, requestHash });
+    }
+
+    // We own the key. Capture the response so a retry can be served from it.
+    req.idempotencyKey = key;
+    captureResponse({ req, res, key });
+    return next();
+  });
+
+/**
+ * Serve, or refuse, a request whose key is already taken.
+ * @returns {Promise<void>}
+ */
+const replayOrReject = async ({ req, res, key, endpoint, requestHash }) => {
+  const existing = await IdempotencyRecord.findOne({ userId: req.userId, key }).lean();
+
+  // TTL removal between the failed insert and this read — treat as fresh.
+  if (!existing) {
+    throw new AppError('Idempotency key is in flux; please retry', 409, 'IDEMPOTENCY_RETRY');
   }
 
-  const existing = await Transaction.findOne({
-    idempotencyKey: key,
-    sender: req.userId,
-  }).lean();
-  if (existing) {
-    const age = Date.now() - new Date(existing.createdAt).getTime();
-    if (age < IDEMPOTENCY_WINDOW_MS) {
-      // Replay protection: surface the original transaction, not a new one.
-      return res.status(200).json({
-        success: true,
-        message: 'Duplicate request ignored (idempotent replay)',
-        code: 'IDEMPOTENT_REPLAY',
-        data: { transaction: existing },
-      });
-    }
-    // Older than the window but key already used → conflict.
+  if (existing.endpoint !== endpoint || existing.requestHash !== requestHash) {
     throw new AppError(
-      'Idempotency-Key has already been used',
-      409,
+      'This Idempotency-Key was already used with a different request. ' +
+        'Use a new key for a new request.',
+      422,
       'IDEMPOTENCY_KEY_REUSED'
     );
   }
 
-  req.idempotencyKey = key;
-  return next();
-});
+  if (existing.status === 'in_progress') {
+    throw new AppError(
+      'A request with this Idempotency-Key is still being processed',
+      409,
+      'IDEMPOTENCY_IN_PROGRESS'
+    );
+  }
+
+  logger.info('Replaying idempotent response', { key, userId: req.userId, endpoint });
+  res.set('Idempotent-Replay', 'true');
+  res.status(existing.responseStatus ?? 200).json(existing.responseBody);
+};
+
+/**
+ * Wrap `res.json` so the outcome is persisted against the key — or the claim
+ * released, when the failure is one worth retrying.
+ *
+ * ## The response is flushed only after the record is durable
+ *
+ * Writing the record without waiting for it, then replying immediately, looks
+ * like a free optimisation and is not. It leaves a window in which the client
+ * has our answer but the record still says `in_progress` — so a retry sent
+ * the instant the first response lands, which is precisely the case this
+ * middleware exists to serve, is refused with a 409 instead of being handed
+ * the answer it already earned.
+ *
+ * The window is milliseconds, which is exactly the timescale on which an
+ * impatient client or a proxy retry actually operates. Ordering the write
+ * before the reply costs one database round trip and makes the guarantee
+ * true rather than probable.
+ */
+const captureResponse = ({ req, res, key }) => {
+  const originalJson = res.json.bind(res);
+
+  res.json = (body) => {
+    const status = res.statusCode;
+
+    const settle =
+      status >= 500
+        ? IdempotencyRecord.deleteOne({ userId: req.userId, key })
+        : IdempotencyRecord.updateOne(
+            { userId: req.userId, key },
+            {
+              status: 'completed',
+              responseStatus: status,
+              responseBody: body,
+              ...(req.ledgerEntryId ? { entryId: req.ledgerEntryId } : {}),
+            }
+          );
+
+    // `.finally` rather than `.then`: a bookkeeping failure is logged, but it
+    // must never swallow a response the customer is waiting on.
+    settle
+      .catch((err) =>
+        logger.error('Failed to record idempotent response', { key, message: err.message })
+      )
+      .finally(() => originalJson(body));
+
+    // Express only uses the return value for chaining, so returning `res`
+    // before the body is flushed is safe.
+    return res;
+  };
+
+  // Safety net for a response that never went through res.json at all.
+  res.on('finish', () => {
+    if (res.statusCode >= 500) {
+      IdempotencyRecord.deleteOne({ userId: req.userId, key }).catch(() => {});
+    }
+  });
+};
 
 export default idempotency;

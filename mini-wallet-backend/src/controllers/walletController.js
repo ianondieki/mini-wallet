@@ -1,104 +1,204 @@
-import mongoose from 'mongoose';
-import { Wallet } from '../models/Wallet.js';
+import { Money } from '../core/money/Money.js';
 import { User } from '../models/User.js';
-import { Transaction } from '../models/Transaction.js';
+import { PaymentOrder } from '../models/PaymentOrder.js';
+import * as payments from '../services/paymentService.js';
+import * as ledger from '../services/ledgerService.js';
+import { limitsFor, KycTier } from '../core/limits/tiers.js';
+import { defaultFeeSchedule } from '../core/fees/FeeSchedule.js';
 import { AppError } from '../utils/ApiError.js';
 import { asyncHandler } from '../utils/asyncHandler.js';
-import { paginate } from '../utils/paginate.js';
-import { logger } from '../config/logger.js';
 
 /**
- * Get the authenticated user's wallet balance.
+ * Wallet endpoints.
+ *
+ * These now read from the ledger rather than a balance field, but the
+ * response shapes are unchanged — `balance` is still a plain number of
+ * shillings and a transaction row still has `type`, `status` and `direction`.
+ * The existing client keeps working untouched; the richer `Money` objects are
+ * added alongside for clients that want exactness.
+ *
+ * The mapping between ledger flows and the legacy vocabulary is confined to
+ * this file. It is a presentation concern, and it does not leak into the
+ * domain.
+ */
+
+/** Default currency for clients that do not specify one. */
+const DEFAULT_CURRENCY = process.env.DEFAULT_CURRENCY || 'KES';
+
+/** Ledger flow → the `type` the existing client understands. */
+const LEGACY_TYPE = {
+  deposit: 'topup',
+  transfer: 'transfer',
+  'payout.reserve': 'withdrawal',
+  'payout.release': 'withdrawal',
+  'payout.settle': 'withdrawal',
+  'fx.convert': 'fx',
+};
+
+/**
+ * Customer-facing labels for flows whose ledger narrative is internal.
+ *
+ * `reservePayout` narrates itself as "Reserve 5,050.00 for payout" — accurate
+ * bookkeeping, and meaningless to the person who asked to withdraw 5,000. A
+ * release narrates the rail's failure reason, which is provider text we should
+ * not hand to a customer raw either. Flows whose narrative is already written
+ * for a human (a deposit naming its rail) are deliberately absent and fall
+ * through to it.
+ */
+const CUSTOMER_LABEL = {
+  'payout.reserve': 'Withdrawal',
+  'payout.release': 'Withdrawal reversed — funds returned',
+  'fx.convert': 'Currency conversion',
+  opening_balance: 'Opening balance',
+};
+
+/** Legacy `type` filter → the ledger flows it covers. */
+const FLOW_FOR_LEGACY_TYPE = {
+  topup: 'deposit',
+  transfer: 'transfer',
+  withdrawal: 'payout.reserve',
+};
+
+/**
+ * Resolve the currency for a request, rejecting anything the customer cannot
+ * legitimately hold.
+ * @param {import('express').Request} req
+ */
+const currencyOf = (req) => String(req.query.currency || DEFAULT_CURRENCY).toUpperCase();
+
+/**
+ * Parse a user-supplied amount into Money, rejecting the many ways a bad one
+ * arrives: negative, zero, non-numeric, or more precision than the currency
+ * has.
+ *
+ * @param {unknown} value
+ * @param {string} currency
+ * @returns {Money}
+ */
+const parseAmount = (value, currency) => {
+  let amount;
+  try {
+    amount = Money.ofRounded(String(value), currency);
+  } catch (err) {
+    throw new AppError(`Invalid amount: ${err.message}`, 400, 'INVALID_AMOUNT');
+  }
+  if (!amount.isPositive) {
+    throw new AppError('Amount must be greater than zero', 400, 'INVALID_AMOUNT');
+  }
+  return amount;
+};
+
+/** Reject a customer who is deactivated or frozen, with the specific reason. */
+const assertCanTransact = (user) => {
+  const verdict = user.canTransact();
+  if (!verdict.ok) throw new AppError(verdict.reason, 403, verdict.code);
+};
+
+/**
+ * Balance, including anything reserved for a payout in flight.
  * @route GET /api/wallet/balance
  */
 export const getBalance = asyncHandler(async (req, res) => {
-  const wallet = await Wallet.findOne({ user: req.userId }).lean();
-  if (!wallet) throw new AppError('Wallet not found', 404, 'WALLET_NOT_FOUND');
+  const currency = currencyOf(req);
+  const balances = await payments.getBalances(req.userId, currency);
 
   res.json({
     success: true,
-    data: { balance: wallet.balance, currency: wallet.currency },
+    data: {
+      // Legacy shape: a plain number in major units.
+      balance: Number(balances.available.amount),
+      currency: balances.currency,
+      // Exact forms, and money that is committed but not yet gone.
+      available: balances.available,
+      reserved: balances.reserved,
+      total: balances.total,
+      balances: balances.all,
+    },
   });
 });
 
 /**
- * Peer-to-peer transfer. Atomic across both wallets via a MongoDB
- * transaction. Overdraft is impossible because the debit is a *conditional*
- * update (`balance >= amount`) — if the guard fails, the whole transaction
- * aborts and nothing moves.
+ * What this customer may do right now: their tier, their headroom, and the
+ * tariff. Powers the "why can't I send this?" and "what will this cost?"
+ * screens without either being a guess on the client.
  *
- * Idempotency is enforced upstream by the idempotency middleware, which
- * stamps `req.idempotencyKey`; we persist it on the transaction so a unique
- * index blocks a concurrent duplicate that slipped past the time window.
- *
+ * @route GET /api/wallet/limits
+ */
+export const getLimits = asyncHandler(async (req, res) => {
+  const currency = currencyOf(req);
+  const tier = req.user.kycTier ?? KycTier.TIER_0;
+  const [usage, limits] = await Promise.all([
+    payments.getUsage(req.userId, currency),
+    Promise.resolve(limitsFor(tier, currency)),
+  ]);
+
+  const headroom = (cap, used) => Money.max(cap.minus(used), Money.zero(currency)).toJSON();
+
+  res.json({
+    success: true,
+    data: {
+      tier,
+      tierLabel: limits.label,
+      currency,
+      limits: {
+        perTransaction: limits.perTransaction.toJSON(),
+        daily: limits.daily.toJSON(),
+        monthly: limits.monthly.toJSON(),
+        maxBalance: limits.maxBalance.toJSON(),
+      },
+      used: { daily: usage.daily.toJSON(), monthly: usage.monthly.toJSON() },
+      remaining: {
+        daily: headroom(limits.daily, usage.daily),
+        monthly: headroom(limits.monthly, usage.monthly),
+        balance: headroom(limits.maxBalance, usage.balance),
+      },
+      tariff: defaultFeeSchedule.publish(currency),
+    },
+  });
+});
+
+/**
+ * Price a movement before the customer commits to it.
+ * @route POST /api/wallet/quote
+ */
+export const getQuote = asyncHandler(async (req, res) => {
+  const currency = String(req.body.currency || DEFAULT_CURRENCY).toUpperCase();
+  const amount = parseAmount(req.body.amount, currency);
+  const flow = String(req.body.flow || 'transfer');
+
+  const quote = await payments.quote({
+    user: req.user,
+    flow,
+    amount,
+    instrument: req.body.instrument,
+  });
+
+  res.json({ success: true, data: quote });
+});
+
+/**
+ * Peer-to-peer transfer.
  * @route POST /api/wallet/transfer
  */
 export const transfer = asyncHandler(async (req, res) => {
-  const amount = Number(req.body.amount);
-  const { recipientEmail, description } = req.body;
+  assertCanTransact(req.user);
 
-  const recipient = await User.findOne({ email: recipientEmail }).lean();
-  if (!recipient) {
-    throw new AppError('Recipient not found', 404, 'RECIPIENT_NOT_FOUND');
-  }
-  if (recipient._id.toString() === req.userId) {
-    throw new AppError('You cannot transfer to yourself', 400, 'SELF_TRANSFER');
-  }
-
-  const session = await mongoose.startSession();
-  let txnDoc;
-  try {
-    await session.withTransaction(async () => {
-      // Conditional debit: only succeeds if funds are sufficient.
-      const debit = await Wallet.updateOne(
-        { user: req.userId, balance: { $gte: amount } },
-        { $inc: { balance: -amount } },
-        { session }
-      );
-      if (debit.modifiedCount !== 1) {
-        throw new AppError('Insufficient balance', 400, 'INSUFFICIENT_FUNDS');
-      }
-
-      // Credit the recipient.
-      const credit = await Wallet.updateOne(
-        { user: recipient._id },
-        { $inc: { balance: amount } },
-        { session }
-      );
-      if (credit.modifiedCount !== 1) {
-        throw new AppError('Recipient wallet unavailable', 409, 'RECIPIENT_WALLET_ERROR');
-      }
-
-      const created = await Transaction.create(
-        [
-          {
-            sender: req.userId,
-            receiver: recipient._id,
-            amount,
-            type: 'transfer',
-            status: 'success',
-            description: description?.trim(),
-            idempotencyKey: req.idempotencyKey,
-          },
-        ],
-        { session }
-      );
-      txnDoc = created[0];
-    });
-  } catch (err) {
-    // A duplicate idempotency key races to a unique-index 11000 here.
-    if (err.code === 11000) {
-      throw new AppError('Duplicate transfer ignored', 409, 'IDEMPOTENT_REPLAY');
-    }
-    throw err;
-  } finally {
-    await session.endSession();
+  const currency = String(req.body.currency || DEFAULT_CURRENCY).toUpperCase();
+  const amount = parseAmount(req.body.amount, currency);
+  // `recipientEmail` is what the existing client sends; `recipient` also
+  // accepts a phone number.
+  const identifier = req.body.recipient ?? req.body.recipientEmail;
+  if (!identifier) {
+    throw new AppError('A recipient email or phone number is required', 400, 'RECIPIENT_REQUIRED');
   }
 
-  logger.info('Transfer completed', {
-    txnId: txnDoc.id,
-    senderId: req.userId,
-    receiverId: recipient._id.toString(),
+  const result = await payments.transfer({
+    user: req.user,
+    recipientIdentifier: identifier,
+    amount,
+    description: req.body.description,
+    idempotencyKey: req.idempotencyKey,
+    device: req.device,
   });
 
   res.status(201).json({
@@ -106,65 +206,122 @@ export const transfer = asyncHandler(async (req, res) => {
     message: 'Transfer successful',
     data: {
       transaction: {
-        id: txnDoc.id,
-        amount,
-        recipient: { name: recipient.name, email: recipient.email },
-        status: txnDoc.status,
-        createdAt: txnDoc.createdAt,
+        id: result.id,
+        amount: Number(result.amount.amount),
+        fee: Number(result.fee.amount),
+        total: Number(result.total.amount),
+        currency,
+        recipient: result.recipient,
+        status: 'success',
+        createdAt: result.createdAt,
       },
     },
   });
 });
 
 /**
- * Paginated, filtered transaction history with per-user direction.
- * @route GET /api/wallet/transactions?page=&limit=&type=&status=
+ * Transaction history.
+ *
+ * In-flight payments are prepended on the first page rather than hidden until
+ * they settle: a customer who has just authorised a withdrawal expects to see
+ * it, and "it vanished for ten minutes" is indistinguishable from "it failed"
+ * from their side.
+ *
+ * @route GET /api/wallet/transactions
  */
 export const getTransactions = asyncHandler(async (req, res) => {
-  const { page, limit, type, status } = req.query;
+  const { page = 1, limit = 10, type, status } = req.query;
+  const currency = currencyOf(req);
+  const pageNumber = Math.max(1, Number.parseInt(page, 10) || 1);
 
-  const filter = {
-    $or: [{ sender: req.userId }, { receiver: req.userId }],
-  };
-  if (type) filter.type = type;
-  if (status) filter.status = status;
-
-  const { items, pagination } = await paginate(Transaction, {
-    filter,
-    page,
+  const history = await ledger.getUserHistory(req.userId, {
+    page: pageNumber,
     limit,
-    populate: [
-      { path: 'sender', select: 'name email' },
-      { path: 'receiver', select: 'name email' },
-    ],
+    currency,
+    flow: type ? FLOW_FOR_LEGACY_TYPE[type] : undefined,
   });
 
-  // Annotate each row with the direction from THIS user's perspective.
-  const data = items.map((t) => {
-    let direction;
-    if (t.type === 'topup') direction = 'credit';
-    else if (t.type === 'withdrawal') direction = 'debit';
-    else direction = t.sender?._id?.toString() === req.userId ? 'debit' : 'credit';
+  // Names for the counterparties referenced in this page.
+  const counterpartyIds = [
+    ...new Set(
+      history.items
+        .flatMap((i) => [i.metadata?.fromUserId, i.metadata?.toUserId])
+        .filter((id) => id && id !== req.userId)
+    ),
+  ];
+  const people = await User.find({ _id: { $in: counterpartyIds } })
+    .select('name email')
+    .lean();
+  const byId = new Map(people.map((p) => [p._id.toString(), { name: p.name, email: p.email }]));
+  const self = { name: req.user.name, email: req.user.email };
 
+  const settled = history.items.map((item) => {
+    const from = item.metadata?.fromUserId;
+    const to = item.metadata?.toUserId;
     return {
-      id: t._id,
-      type: t.type,
-      status: t.status,
-      amount: t.amount,
-      direction,
-      description: t.description,
-      sender: t.sender ? { name: t.sender.name, email: t.sender.email } : null,
-      receiver: t.receiver ? { name: t.receiver.name, email: t.receiver.email } : null,
-      mpesaReceiptNumber: t.mpesaReceiptNumber,
-      createdAt: t.createdAt,
+      id: item.id,
+      type: LEGACY_TYPE[item.flow] ?? item.flow,
+      status: item.flow === 'payout.release' ? 'reversed' : 'success',
+      amount: Number(item.amount.amount),
+      currency: item.amount.currency,
+      direction: item.direction,
+      // The customer's own note wins; then a human label for internal flows;
+      // then the narrative, which is only reached when it reads well already.
+      description:
+        item.metadata?.description ?? CUSTOMER_LABEL[item.flow] ?? item.narrative,
+      sender: from ? (from === req.userId ? self : byId.get(from) ?? null) : null,
+      receiver: to ? (to === req.userId ? self : byId.get(to) ?? null) : null,
+      mpesaReceiptNumber: item.metadata?.receipt ?? null,
+      createdAt: item.occurredAt,
+      flow: item.flow,
     };
   });
 
-  res.json({ success: true, data: { transactions: data, pagination } });
+  let pending = [];
+  if (pageNumber === 1 && !status) {
+    const orders = await PaymentOrder.find({
+      userId: req.userId,
+      status: { $nin: ['succeeded', 'failed', 'reversed'] },
+    })
+      .sort({ createdAt: -1 })
+      .limit(20)
+      .lean();
+
+    pending = orders.map((order) => ({
+      id: order.orderId,
+      type: order.direction === 'collect' ? 'topup' : 'withdrawal',
+      status: 'pending',
+      amount: Number(Money.fromMinor(order.amount.minor, order.amount.currency).toDecimal()),
+      currency: order.amount.currency,
+      direction: order.direction === 'collect' ? 'credit' : 'debit',
+      description: order.flow === 'deposit' ? 'Wallet top-up' : 'Wallet withdrawal',
+      sender: null,
+      receiver: null,
+      mpesaReceiptNumber: null,
+      createdAt: order.createdAt,
+      rail: order.rail,
+      orderId: order.orderId,
+    }));
+  }
+
+  const transactions = [...pending, ...settled].filter(
+    (t) => !status || t.status === status
+  );
+
+  res.json({
+    success: true,
+    data: {
+      transactions,
+      pagination: {
+        ...history.pagination,
+        total: history.pagination.total + pending.length,
+      },
+    },
+  });
 });
 
 /**
- * Search users by email/name to pick a transfer recipient.
+ * Search customers to pick a transfer recipient.
  * @route GET /api/wallet/recipients?q=
  */
 export const searchRecipients = asyncHandler(async (req, res) => {
@@ -172,14 +329,14 @@ export const searchRecipients = asyncHandler(async (req, res) => {
   if (q.length < 2) {
     return res.json({ success: true, data: { recipients: [] } });
   }
-  // Escape regex metacharacters in user input.
+  // Escape regex metacharacters so a search string cannot become a pattern.
   const safe = q.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
   const rx = new RegExp(safe, 'i');
 
   const users = await User.find({
     _id: { $ne: req.userId },
     isActive: true,
-    $or: [{ email: rx }, { name: rx }],
+    $or: [{ email: rx }, { name: rx }, { phone: rx }],
   })
     .select('name email')
     .limit(8)
