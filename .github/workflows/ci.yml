@@ -59,6 +59,7 @@ jobs:
       # marketplace action so there is no third-party dependency in the
       # pipeline that verifies money movement.
       - name: Start MongoDB replica set
+        id: mongo
         working-directory: .
         run: |
           set -euo pipefail
@@ -99,14 +100,29 @@ jobs:
           NODE_ENV: test
           JWT_SECRET: ci-access-secret-not-used-anywhere-real
           JWT_REFRESH_SECRET: ci-refresh-secret-not-used-anywhere-real
-        run: npm run test:integration --reporter=spec
+          # The app logs an info line per registration and per ledger posting.
+          # Useful when debugging one test, overwhelming across twenty-nine.
+          LOG_LEVEL: error
+        run: |
+          set -o pipefail
+          npm run test:integration 2>&1 | tee test-output.txt
 
-      # Only the tail. A full mongod log is thousands of lines and buries the
-      # test failure it was added to help diagnose.
-      - name: MongoDB logs on failure
-        if: failure()
+      # Only when the database itself failed — otherwise mongod's log is noise
+      # that buries the assertion it was added to help diagnose.
+      - name: MongoDB logs
+        if: failure() && steps.mongo.outcome == 'failure'
         working-directory: .
         run: docker logs --tail 50 mongo || true
+
+      # Last, so it is what you see first when opening a failed run.
+      - name: Failing assertions
+        if: failure()
+        run: |
+          echo "── Failing tests ─────────────────────────────────────────"
+          grep -E -A 25 '^ *not ok' test-output.txt | head -250 || \
+            echo "(no assertion failures found — the suite probably crashed)"
+          echo "── Summary ───────────────────────────────────────────────"
+          grep -E '^# (tests|pass|fail|skipped)' test-output.txt || true
 
   # ── Frontend ───────────────────────────────────────────────────────────
   ui:
