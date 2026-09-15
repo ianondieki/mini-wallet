@@ -129,6 +129,20 @@ const replayOrReject = async ({ req, res, key, endpoint, requestHash }) => {
 /**
  * Wrap `res.json` so the outcome is persisted against the key — or the claim
  * released, when the failure is one worth retrying.
+ *
+ * ## The response is flushed only after the record is durable
+ *
+ * Writing the record without waiting for it, then replying immediately, looks
+ * like a free optimisation and is not. It leaves a window in which the client
+ * has our answer but the record still says `in_progress` — so a retry sent
+ * the instant the first response lands, which is precisely the case this
+ * middleware exists to serve, is refused with a 409 instead of being handed
+ * the answer it already earned.
+ *
+ * The window is milliseconds, which is exactly the timescale on which an
+ * impatient client or a proxy retry actually operates. Ordering the write
+ * before the reply costs one database round trip and makes the guarantee
+ * true rather than probable.
  */
 const captureResponse = ({ req, res, key }) => {
   const originalJson = res.json.bind(res);
@@ -136,9 +150,7 @@ const captureResponse = ({ req, res, key }) => {
   res.json = (body) => {
     const status = res.statusCode;
 
-    // Fire-and-forget: the customer's response must not wait on bookkeeping,
-    // and a failure to record is logged rather than surfaced.
-    const persist =
+    const settle =
       status >= 500
         ? IdempotencyRecord.deleteOne({ userId: req.userId, key })
         : IdempotencyRecord.updateOne(
@@ -151,14 +163,20 @@ const captureResponse = ({ req, res, key }) => {
             }
           );
 
-    persist.catch((err) =>
-      logger.error('Failed to record idempotent response', { key, message: err.message })
-    );
+    // `.finally` rather than `.then`: a bookkeeping failure is logged, but it
+    // must never swallow a response the customer is waiting on.
+    settle
+      .catch((err) =>
+        logger.error('Failed to record idempotent response', { key, message: err.message })
+      )
+      .finally(() => originalJson(body));
 
-    return originalJson(body);
+    // Express only uses the return value for chaining, so returning `res`
+    // before the body is flushed is safe.
+    return res;
   };
 
-  // A thrown error never reaches res.json, so release the claim there too.
+  // Safety net for a response that never went through res.json at all.
   res.on('finish', () => {
     if (res.statusCode >= 500) {
       IdempotencyRecord.deleteOne({ userId: req.userId, key }).catch(() => {});
