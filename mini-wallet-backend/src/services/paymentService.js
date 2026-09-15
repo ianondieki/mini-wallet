@@ -441,7 +441,7 @@ export const transfer = async ({
   const session = await mongoose.startSession();
   try {
     await session.withTransaction(async () => {
-      await ledger.post(entry, { session, idempotencyKey });
+      await ledger.post(entry, { session, idempotencyKey, idempotencyScope: user.id });
       // Committed with the money: if the transfer rolls back, so does this.
       await outbox.enqueue(
         {
@@ -610,7 +610,7 @@ export const initiatePayout = async ({ user, amount, instrument, idempotencyKey,
   const session = await mongoose.startSession();
   try {
     await session.withTransaction(async () => {
-      await ledger.post(reserveEntry, { session, idempotencyKey });
+      await ledger.post(reserveEntry, { session, idempotencyKey, idempotencyScope: user.id });
       await PaymentOrder.create(
         [
           {
