@@ -99,12 +99,14 @@ jobs:
           NODE_ENV: test
           JWT_SECRET: ci-access-secret-not-used-anywhere-real
           JWT_REFRESH_SECRET: ci-refresh-secret-not-used-anywhere-real
-        run: npm run test:integration
+        run: npm run test:integration --reporter=spec
 
+      # Only the tail. A full mongod log is thousands of lines and buries the
+      # test failure it was added to help diagnose.
       - name: MongoDB logs on failure
         if: failure()
         working-directory: .
-        run: docker logs mongo || true
+        run: docker logs --tail 50 mongo || true
 
   # ── Frontend ───────────────────────────────────────────────────────────
   ui:
