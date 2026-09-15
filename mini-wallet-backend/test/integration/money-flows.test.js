@@ -15,6 +15,15 @@ process.env.MPESA_SHORT_CODE = process.env.MPESA_SHORT_CODE || '174379';
 // lets these tests exercise settlement without impersonating Safaricom's IPs.
 process.env.SAFARICOM_IP_WHITELIST = '';
 process.env.MPESA_CALLBACK_SECRET = '';
+// Every test registers its own users, so the whole suite arrives from one IP
+// and would trip the production auth limit (5 per 15 min) within seconds.
+// That is the limiter working correctly on traffic it was never meant to
+// describe. Raised here; the limiter's own behaviour is tested directly in
+// test/unit/rateLimiter.test.js.
+process.env.RATE_LIMIT_AUTH_MAX = '100000';
+process.env.RATE_LIMIT_GLOBAL_MAX = '100000';
+process.env.RATE_LIMIT_PAYMENT_MAX = '100000';
+process.env.RATE_LIMIT_REFRESH_MAX = '100000';
 
 const request = (await import('supertest')).default;
 const { createApp } = await import('../../src/app.js');
