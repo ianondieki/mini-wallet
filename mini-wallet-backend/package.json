@@ -12,7 +12,9 @@
     "dev": "node --watch src/server.js",
     "test": "node --test \"test/**/*.test.js\"",
     "test:unit": "node --test \"test/unit/**/*.test.js\"",
-    "test:integration": "node --test \"test/integration/**/*.test.js\""
+    "test:integration": "node --test \"test/integration/**/*.test.js\"",
+    "migrate:ledger": "node scripts/migrate-to-ledger.js",
+    "migrate:ledger:commit": "node scripts/migrate-to-ledger.js --commit"
   },
   "keywords": [
     "mpesa",

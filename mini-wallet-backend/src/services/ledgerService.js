@@ -3,7 +3,7 @@ import { LedgerEntry } from '../models/LedgerEntry.js';
 import { AccountBalance } from '../models/AccountBalance.js';
 import { Money } from '../core/money/Money.js';
 import { JournalEntry, foldBalances } from '../core/ledger/JournalEntry.js';
-import { signFor, userIdFromAccount, parseAccount } from '../core/ledger/accounts.js';
+import { signFor, userIdFromAccount, parseAccount, userAvailable } from '../core/ledger/accounts.js';
 import { AppError } from '../utils/ApiError.js';
 import { logger } from '../config/logger.js';
 
@@ -283,8 +283,15 @@ export const getUserHistory = async (userId, { page = 1, limit = 20, flow, curre
   const safePage = Math.max(1, Number.parseInt(page, 10) || 1);
   const safeLimit = Math.min(100, Math.max(1, Number.parseInt(limit, 10) || 20));
   const filter = { userIds: userId };
-  if (flow) filter.flow = flow;
   if (currency) filter.currencies = currency;
+
+  // A payout posts two entries: the reservation, which moves money out of the
+  // customer's spendable balance, and the settlement, which moves it from
+  // `reserved` out to the rail. Only the first is a statement line — showing
+  // both would present one withdrawal as two. Excluded here rather than after
+  // the query so the pagination total stays accurate.
+  const INTERNAL_FLOWS = ['payout.settle'];
+  filter.flow = flow ? flow : { $nin: INTERNAL_FLOWS };
 
   const [docs, total] = await Promise.all([
     LedgerEntry.find(filter)
@@ -298,9 +305,14 @@ export const getUserHistory = async (userId, { page = 1, limit = 20, flow, curre
   const items = docs.map((doc) => {
     const entry = JournalEntry.fromJSON({ ...doc, id: doc.entryId });
     const ccy = currency || entry.currencies[0];
-    // Net effect on this user's spendable balance — the number they care about.
+
+    // Effect on the user's SPENDABLE balance specifically, not the net across
+    // every account they own — a reservation nets to zero across `available`
+    // and `reserved`, but what the customer recognises is the amount that
+    // left the balance they can spend.
+    const spendable = userAvailable(userId, ccy);
     const effect = entry.postings
-      .filter((p) => userIdFromAccount(p.account) === userId && p.amount.currency === ccy)
+      .filter((p) => p.account === spendable && p.amount.currency === ccy)
       .reduce(
         (acc, p) =>
           signFor(p.account, p.direction) === 1 ? acc.plus(p.amount) : acc.minus(p.amount),
