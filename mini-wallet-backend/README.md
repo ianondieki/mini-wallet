@@ -356,27 +356,91 @@ scripts/migrate-to-ledger.js   legacy balances → opening entries
 ## Testing
 
 ```bash
-npm run test:unit          # 119 tests, no database required
-npm run test:integration   # needs a MongoDB replica set
-npm test                   # both
+npm run test:unit          # 119 tests, no database required, ~1s
+npm run test:integration    # 29 tests, needs a MongoDB replica set
+npm test                    # both
 ```
 
 The unit suite covers exact money arithmetic (including a fuzz test proving
 allocation never loses a minor unit), the ledger balance invariant, every
 posting flow, fee bands, KYC limits, risk scoring, routing policies, circuit
-breaker transitions and every branch of the payout failover rule.
+breaker transitions and every branch of the payout failover rule. It needs no
+infrastructure because `core/` and `rails/` have no I/O.
 
-Integration tests need **MongoDB as a replica set** — multi-document
-transactions require it. They self-skip with an explanatory message when one
-is unavailable rather than failing. Point them at a real one with:
+### The integration tests need a replica set, not a standalone mongod
 
-```bash
-TEST_MONGO_URI=mongodb://127.0.0.1:27017/mini_wallet_test?replicaSet=rs0 npm run test:integration
+This trips people up, so it is worth being explicit: the wallet's atomicity
+relies on **multi-document transactions**, and standalone MongoDB does not
+support them. Pointing the tests at a plain `mongod` fails with
+
+```
+Transaction numbers are only allowed on a replica set member or mongos
 ```
 
-To run the whole wallet locally with no provider credentials, set
-`ENABLE_RAIL_SIMULATOR=true` — a rail with controllable latency and failure
-rate. It is refused outright when `NODE_ENV=production`.
+which looks like a bug in the wallet and is not one.
+
+**Easiest — a throwaway replica set in Docker** (port 27018, so it will not
+clash with a MongoDB you already run on 27017):
+
+```bash
+npm run db:up        # starts it and prints the exact command to run
+npm run db:down      # when you are done
+```
+
+**Or convert a MongoDB you already have.** Stop it, restart with a replica set
+name, and initiate once:
+
+```bash
+mongod --replSet rs0 --dbpath /your/data/path
+# then, once, in a separate shell:
+mongosh --eval 'rs.initiate({_id:"rs0",members:[{_id:0,host:"127.0.0.1:27017"}]})'
+```
+
+This is a one-time change and is safe for a development machine — a
+single-node replica set behaves like a standalone server, plus transactions.
+
+**Then run them:**
+
+```bash
+TEST_MONGO_URI='mongodb://127.0.0.1:27018/mini_wallet_test?replicaSet=rs0' \
+  REQUIRE_TEST_DB=true npm run test:integration
+```
+
+### Skipping is deliberate locally and forbidden in CI
+
+Without a database the integration tests **skip** with an explanatory message
+rather than failing, so a contributor without MongoDB still gets a useful unit
+run instead of a wall of red.
+
+That leniency is dangerous in automation: a database that failed to start
+would produce a green build which tested nothing. Setting `REQUIRE_TEST_DB=true`
+turns an unavailable database into a hard failure. CI always sets it — use it
+locally too whenever you actually mean to test the money paths.
+
+### CI
+
+`.github/workflows/ci.yml` runs on every push and pull request:
+
+| Job | What it proves |
+|---|---|
+| `backend-unit` | the domain core is correct, in about a second |
+| `backend-integration` | the money paths work against a real replica set |
+| `ui` | the frontend tests pass **and** it still compiles |
+
+The integration job starts `mongo:8` with plain `docker run` and initiates a
+single-node replica set — no marketplace action, so nothing third-party sits
+in the pipeline that verifies money movement.
+
+### Running the whole wallet with no provider credentials
+
+```bash
+ENABLE_RAIL_SIMULATOR=true npm run dev
+```
+
+Registers a rail with controllable latency and failure rate, so routing,
+circuit breakers and failover can be exercised through states a provider
+sandbox will not reproduce on demand. It is refused outright when
+`NODE_ENV=production` — it would settle payouts that never happened.
 
 ---
 
