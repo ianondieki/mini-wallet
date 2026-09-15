@@ -35,6 +35,23 @@ const LEGACY_TYPE = {
   'fx.convert': 'fx',
 };
 
+/**
+ * Customer-facing labels for flows whose ledger narrative is internal.
+ *
+ * `reservePayout` narrates itself as "Reserve 5,050.00 for payout" — accurate
+ * bookkeeping, and meaningless to the person who asked to withdraw 5,000. A
+ * release narrates the rail's failure reason, which is provider text we should
+ * not hand to a customer raw either. Flows whose narrative is already written
+ * for a human (a deposit naming its rail) are deliberately absent and fall
+ * through to it.
+ */
+const CUSTOMER_LABEL = {
+  'payout.reserve': 'Withdrawal',
+  'payout.release': 'Withdrawal reversed — funds returned',
+  'fx.convert': 'Currency conversion',
+  opening_balance: 'Opening balance',
+};
+
 /** Legacy `type` filter → the ledger flows it covers. */
 const FLOW_FOR_LEGACY_TYPE = {
   topup: 'deposit',
@@ -248,7 +265,10 @@ export const getTransactions = asyncHandler(async (req, res) => {
       amount: Number(item.amount.amount),
       currency: item.amount.currency,
       direction: item.direction,
-      description: item.metadata?.description ?? item.narrative,
+      // The customer's own note wins; then a human label for internal flows;
+      // then the narrative, which is only reached when it reads well already.
+      description:
+        item.metadata?.description ?? CUSTOMER_LABEL[item.flow] ?? item.narrative,
       sender: from ? (from === req.userId ? self : byId.get(from) ?? null) : null,
       receiver: to ? (to === req.userId ? self : byId.get(to) ?? null) : null,
       mpesaReceiptNumber: item.metadata?.receipt ?? null,

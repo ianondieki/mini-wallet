@@ -433,6 +433,23 @@ The integration job starts `mongo:8` with plain `docker run` and initiates a
 single-node replica set — no marketplace action, so nothing third-party sits
 in the pipeline that verifies money movement.
 
+### Seeing it run with no infrastructure at all
+
+```bash
+node demo/server.js          # http://localhost:3000
+cd ../mini-wallet-ui && npm run dev
+```
+
+Serves the wallet API from the **real domain core** — Money, the ledger, the
+fee schedule, KYC limits, the risk engine, the rail router — against an
+in-memory list of journal entries instead of MongoDB. Balances are folded from
+postings exactly as in production; only the storage is swapped. Sign in with
+any email and password.
+
+Useful for seeing the UI without standing up a database and for demonstrating
+the ledger to someone who does not read code. Authentication is a stub and
+nothing persists — `src/server.js` is the real server.
+
 ### Running the whole wallet with no provider credentials
 
 ```bash
