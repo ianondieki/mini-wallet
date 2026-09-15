@@ -43,6 +43,14 @@ const ledgerEntrySchema = new mongoose.Schema(
     // index below is the last line of defence against a double-spend that
     // races past the idempotency store.
     idempotencyKey: { type: String },
+
+    /**
+     * The user the key belongs to. Idempotency keys are chosen by clients,
+     * so two customers picking the same string is ordinary, not suspicious —
+     * a globally unique index would let one customer's key block the other's
+     * transfer, or surface its result to them.
+     */
+    idempotencyScope: { type: String },
     metadata: { type: mongoose.Schema.Types.Mixed, default: {} },
   },
   { timestamps: true, minimize: false }
@@ -52,9 +60,11 @@ const ledgerEntrySchema = new mongoose.Schema(
 ledgerEntrySchema.index({ userIds: 1, occurredAt: -1 });
 ledgerEntrySchema.index({ accounts: 1, occurredAt: -1 });
 
-// One entry per idempotency key, only for entries that carry one.
+// One entry per (user, idempotency key) — scoped, never global. The partial
+// filter keeps entries without a key out of the index entirely, so only real
+// pairs are constrained.
 ledgerEntrySchema.index(
-  { idempotencyKey: 1 },
+  { idempotencyScope: 1, idempotencyKey: 1 },
   { unique: true, partialFilterExpression: { idempotencyKey: { $type: 'string' } } }
 );
 

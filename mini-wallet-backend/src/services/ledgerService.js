@@ -128,9 +128,16 @@ const applyDelta = async (d, entryId, session) => {
  *   existing transaction instead of opening one — used when a posting must
  *   commit atomically with other writes (e.g. a rail transfer record).
  * @param {string} [options.idempotencyKey]
+ * @param {string} [options.idempotencyScope]  The user the key belongs to.
+ *   Required alongside a key: the uniqueness constraint is per user, because
+ *   clients choose their own keys and two customers picking the same string
+ *   must not collide.
  * @returns {Promise<JournalEntry>} The entry as committed.
  */
-export const post = async (entry, { session: outerSession, idempotencyKey } = {}) => {
+export const post = async (
+  entry,
+  { session: outerSession, idempotencyKey, idempotencyScope } = {}
+) => {
   if (!(entry instanceof JournalEntry)) {
     throw new TypeError('ledgerService.post expects a JournalEntry');
   }
@@ -142,8 +149,11 @@ export const post = async (entry, { session: outerSession, idempotencyKey } = {}
     accounts: entry.accounts,
     userIds: [...new Set(entry.accounts.map(userIdFromAccount).filter(Boolean))],
     currencies: entry.currencies,
-    ...(idempotencyKey ? { idempotencyKey } : {}),
+    ...(idempotencyKey ? { idempotencyKey, idempotencyScope } : {}),
   };
+  if (idempotencyKey && !idempotencyScope) {
+    throw new TypeError('An idempotencyKey requires an idempotencyScope (the user it belongs to)');
+  }
   delete doc.id;
 
   /** @param {import('mongoose').ClientSession} session */
