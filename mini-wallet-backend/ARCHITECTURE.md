@@ -53,7 +53,7 @@ Mongo, or Safaricom.
 └──────────────────────────────────────────────────────────────┘
 ```
 
-The practical payoff: **119 unit tests run in under a second with no
+The practical payoff: **124 unit tests run in under a second with no
 database**, because the rules that are hardest to get right — exact money
 arithmetic, the balance invariant, fee bands, tier limits, risk scoring, rail
 routing — live in `core/` and `rails/`, which have no I/O to mock.
