@@ -1,6 +1,6 @@
 # Mini Wallet — multi-rail payments backend
 
-[![CI](https://github.com/ianondieki/mini-wallet/actions/workflows/ci.yml/badge.svg?branch=claude/inspiring-lamport-rbrudp)](https://github.com/ianondieki/mini-wallet/actions/workflows/ci.yml)
+[![CI](https://github.com/ianondieki/mini-wallet/actions/workflows/ci.yml/badge.svg)](https://github.com/ianondieki/mini-wallet/actions/workflows/ci.yml)
 
 A production-shaped fintech API: a **double-entry ledger** as the source of
 truth, a **pluggable payment-rail layer** (M-Pesa, bank transfer via PesaLink,
