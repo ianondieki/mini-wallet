@@ -1,3 +1,15 @@
+/**
+ * @deprecated Superseded by LedgerEntry (accounting) and PaymentOrder
+ * (operational state).
+ *
+ * This collection conflated the two: a `pending` row had already moved a
+ * balance, so it was simultaneously a record of intent and a record of fact.
+ * It is kept as a read-only archive of pre-migration history — the ledger
+ * starts from the migrated opening balances rather than replaying these rows,
+ * because doing both would double-count.
+ *
+ * Nothing writes to it.
+ */
 import mongoose from 'mongoose';
 
 const transactionSchema = new mongoose.Schema(

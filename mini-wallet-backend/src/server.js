@@ -2,6 +2,7 @@ import 'dotenv/config';
 import { createApp } from './app.js';
 import { connectDB, disconnectDB } from './config/db.js';
 import { logger } from './config/logger.js';
+import { startDispatcher } from './services/outboxService.js';
 
 const PORT = process.env.PORT || 3000;
 const SHUTDOWN_TIMEOUT_MS = 5000;
@@ -21,6 +22,13 @@ const start = async () => {
     logger.info(`Server listening on port ${PORT}`, { env: process.env.NODE_ENV })
   );
 
+  // Deliver the events that committed alongside money movements. Safe to run
+  // on every instance: events are claimed with an atomic update, so several
+  // dispatchers never deliver the same one twice.
+  const stopDispatcher = startDispatcher({
+    intervalMs: Number(process.env.OUTBOX_INTERVAL_MS) || 2000,
+  });
+
   /**
    * Graceful shutdown: stop accepting connections, drain in-flight requests
    * (bounded by SHUTDOWN_TIMEOUT_MS), close the DB, then exit.
@@ -28,6 +36,8 @@ const start = async () => {
    */
   const shutdown = async (signal) => {
     logger.info(`${signal} received — shutting down gracefully`);
+
+    stopDispatcher();
 
     const forceTimer = setTimeout(() => {
       logger.error('Shutdown timed out — forcing exit');

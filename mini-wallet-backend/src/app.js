@@ -9,6 +9,10 @@ import { notFound, errorHandler } from './middleware/errorHandler.js';
 import authRoutes from './routes/auth.js';
 import walletRoutes from './routes/wallet.js';
 import mpesaRoutes from './routes/mpesa.js';
+import paymentRoutes from './routes/payments.js';
+import opsRoutes from './routes/ops.js';
+import { bootstrapRails } from './rails/index.js';
+import { resolveUserId } from './services/paymentService.js';
 
 /**
  * Build and return the Express application. Kept separate from server.js so
@@ -17,6 +21,10 @@ import mpesaRoutes from './routes/mpesa.js';
  */
 export const createApp = () => {
   const app = express();
+
+  // Register the payment rails this deployment offers. Done here rather than
+  // at import time so tests can build an app with a different rail set.
+  bootstrapRails({ resolveUserId });
 
   // Behind a reverse proxy (Nginx/Heroku/etc.) so req.ip + secure cookies work.
   app.set('trust proxy', 1);
@@ -59,7 +67,17 @@ export const createApp = () => {
   );
 
   // ── Body parsing + cookies ────────────────────────────────────────────
-  app.use(express.json({ limit: '1mb' }));
+  // The raw bytes are kept for webhook signature verification: an HMAC is
+  // computed over exactly what the provider sent, and re-serialising the
+  // parsed body would change key order or spacing and break a valid MAC.
+  app.use(
+    express.json({
+      limit: '1mb',
+      verify: (req, _res, buf) => {
+        req.rawBody = buf;
+      },
+    })
+  );
   app.use(express.urlencoded({ extended: true, limit: '1mb' }));
   app.use(cookieParser());
 
@@ -74,9 +92,24 @@ export const createApp = () => {
     res.json({ success: true, status: 'ok', uptime: process.uptime() })
   );
 
+  // ── Device fingerprint for the risk engine ────────────────────────────
+  // Cheap signals the client cannot easily suppress. Not authentication —
+  // just context for scoring, and treated as untrusted hints throughout.
+  app.use((req, _res, next) => {
+    req.device = {
+      ip: req.ip,
+      userAgent: req.get('User-Agent') ?? null,
+      deviceId: req.get('X-Device-Id') ?? null,
+    };
+    next();
+  });
+
   // ── API routes ────────────────────────────────────────────────────────
   app.use('/api/auth', authRoutes);
   app.use('/api/wallet', walletRoutes);
+  app.use('/api/payments', paymentRoutes);
+  app.use('/api/ops', opsRoutes);
+  // Legacy paths — kept because Safaricom has the callback URLs registered.
   app.use('/api/mpesa', mpesaRoutes);
 
   // ── 404 + central error handler (must be last) ───────────────────────
