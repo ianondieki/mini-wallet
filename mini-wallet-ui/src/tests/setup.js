@@ -2,7 +2,7 @@ import '@testing-library/jest-dom/vitest';
 import { afterAll, afterEach, beforeAll, vi } from 'vitest';
 import { cleanup } from '@testing-library/react';
 import { server } from '../mocks/server.js';
-import { resetMpesaPolls } from '../mocks/handlers.js';
+import { resetMpesaPolls, resetFeatureState } from '../mocks/handlers.js';
 
 // ── jsdom polyfills ───────────────────────────────────────────────────
 // Recharts' ResponsiveContainer relies on ResizeObserver.
@@ -38,6 +38,9 @@ beforeAll(() => server.listen({ onUnhandledRequest: 'error' }));
 afterEach(() => {
   server.resetHandlers();
   resetMpesaPolls();
+  // Savings goals and requests are stateful fixtures, so a test that moves
+  // money must not leak that into the next one.
+  resetFeatureState();
   cleanup();
 });
 

@@ -65,3 +65,65 @@ export function useRecipientSearch(query) {
 }
 
 export default useWallet;
+
+/**
+ * Paying several people in one entry, and giving money back.
+ *
+ * Both live here rather than in their own hook because they are the same
+ * wallet: a split is a transfer with more than one payee, and a refund is a
+ * transfer pointed back at whoever paid.
+ */
+export function useWalletExtras() {
+  const qc = useQueryClient();
+  const refresh = () => {
+    qc.invalidateQueries({ queryKey: walletKeys.balance });
+    qc.invalidateQueries({ queryKey: ['transactions'] });
+    qc.invalidateQueries({ queryKey: ['savings', 'goals'] });
+  };
+
+  const splitMutation = useMutation({
+    mutationFn: async ({ recipients, amount, shares, description, idempotencyKey }) => {
+      const { data } = await api.post(
+        '/api/wallet/split',
+        { recipients, amount, shares, description },
+        { headers: { 'Idempotency-Key': idempotencyKey } }
+      );
+      return data.data;
+    },
+    onSuccess: refresh,
+  });
+
+  const refundMutation = useMutation({
+    mutationFn: async ({ entryId, amount, reason, idempotencyKey }) => {
+      const { data } = await api.post(
+        '/api/wallet/refund',
+        { entryId, amount, reason },
+        { headers: { 'Idempotency-Key': idempotencyKey } }
+      );
+      return data.data;
+    },
+    onSuccess: refresh,
+  });
+
+  return { split: splitMutation.mutateAsync, splitMutation, refund: refundMutation.mutateAsync, refundMutation };
+}
+
+/**
+ * How much of a received payment can still be given back. Asked before the
+ * refund button is offered, so a payment that is already fully refunded shows
+ * as such instead of failing on submit.
+ *
+ * @param {string|null} entryId
+ * @param {boolean} enabled
+ */
+export function useRefundable(entryId, enabled = true) {
+  return useQuery({
+    queryKey: ['wallet', 'refundable', entryId],
+    enabled: Boolean(entryId) && enabled,
+    retry: false,
+    queryFn: async () => {
+      const { data } = await api.get(`/api/wallet/transactions/${entryId}/refundable`);
+      return data.data;
+    },
+  });
+}
