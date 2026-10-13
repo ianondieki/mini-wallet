@@ -1,4 +1,15 @@
-import { randomUUID } from 'node:crypto';
+/**
+ * `crypto.randomUUID` from the Web Crypto API rather than `node:crypto`.
+ *
+ * It is the same function — Node has exposed it on `globalThis.crypto` since
+ * v19, and this package requires v20 — but importing it from `node:crypto`
+ * was the single thing stopping `core/` from running anywhere. The domain core
+ * is deliberately free of I/O and framework; being free of the *runtime* too
+ * means the identical ledger code can execute in a browser, a worker, or an
+ * edge function, which is what makes it demonstrable without a server.
+ */
+const randomUUID = () => globalThis.crypto.randomUUID();
+
 import { Money } from '../money/Money.js';
 import { Direction, parseAccount, signFor } from './accounts.js';
 
