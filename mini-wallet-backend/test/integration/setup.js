@@ -1,4 +1,5 @@
 import mongoose from 'mongoose';
+import { basename } from 'node:path';
 
 /**
  * Obtain a MongoDB connection for integration tests.
@@ -21,12 +22,40 @@ import mongoose from 'mongoose';
  *
  * @returns {Promise<{ skip: boolean, reason?: string, stop: () => Promise<void> }>}
  */
+
+/**
+ * Give each test file its own database on a shared server.
+ *
+ * `node --test` runs test files in **parallel child processes**. Pointed at
+ * one URI they would all open the same database, and `clearDb()` in one file's
+ * `beforeEach` would wipe another file's fixtures mid-test — failures that
+ * look like broken money code and are nothing of the sort. The in-memory path
+ * never had the problem because each file starts its own server; CI, which
+ * supplies a single URI, did.
+ *
+ * Parsed by hand rather than with `new URL`, which mangles the comma-separated
+ * host lists a real replica-set URI can carry.
+ *
+ * @param {string} uri
+ * @returns {string}
+ */
+const perFileUri = (uri) => {
+  const [base, query] = uri.split('?');
+  const pathStart = base.indexOf('/', base.indexOf('//') + 2);
+  const host = pathStart === -1 ? base : base.slice(0, pathStart);
+  const db = (pathStart === -1 ? '' : base.slice(pathStart + 1)) || 'mini_wallet_test';
+  const suite = basename(process.argv[1] ?? 'suite')
+    .replace(/\.test\.js$/, '')
+    .replace(/[^a-z0-9]+/gi, '_') || 'suite';
+  return `${host}/${db}_${suite}${query ? `?${query}` : ''}`;
+};
+
 export const startTestDb = async () => {
   const noop = async () => {};
 
   // 1. Explicit URI wins.
   if (process.env.TEST_MONGO_URI) {
-    await mongoose.connect(process.env.TEST_MONGO_URI);
+    await mongoose.connect(perFileUri(process.env.TEST_MONGO_URI));
     return {
       skip: false,
       stop: async () => {
