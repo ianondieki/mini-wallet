@@ -7,6 +7,11 @@ truth, a **pluggable payment-rail layer** (M-Pesa, bank transfer via PesaLink,
 SACCOs and MFIs via Apache Fineract) with **least-cost routing**, KYC tier
 limits, an explainable risk engine, and automated reconciliation.
 
+On top of that core: **savings vaults** with an optional commitment lock,
+**split payments** that pay several people in one atomic entry, **refunds**
+that are forward entries rather than reversals, and **money requests** for the
+direction a ledger cannot express on its own — asking.
+
 > Real money flows through this. Balances are the sum of immutable journal
 > postings — not a mutable field — so money cannot be created or destroyed,
 > and every balance can be replayed from the entries that produced it.
@@ -161,6 +166,86 @@ settle.
 #### `GET /api/wallet/recipients?q=<term>`  *(auth)*
 Matches name, email or phone. Minimum 2 characters.
 
+#### `POST /api/wallet/split`  *(auth, Idempotency-Key required)*
+`{ recipients: [email|phone, …], amount | shares: [...], currency?, description? }`
+Pays 2–20 people as **one** journal entry, so nobody can end up half-paid.
+With `amount`, the total is apportioned by largest remainder — 100.00 three
+ways is 33.34 / 33.33 / 33.33 and the shares add back up exactly. With
+`shares`, each recipient gets their own figure. Priced once per split, not
+once per leg.
+
+#### `GET /api/wallet/transactions/:entryId/refundable`  *(auth)*
+What is still refundable on a payment you received, what has already gone
+back, and whether a full refund would also return the fee. Moves no money.
+
+#### `POST /api/wallet/refund`  *(auth, Idempotency-Key required)*
+`{ entryId, amount?, currency?, reason? }`
+Only the payee can refund, and only up to what they received. Omitting
+`amount` returns everything still outstanding; partial refunds may be
+repeated. The cap is derived from the ledger — the postings of the original
+less the principal of every refund already issued — so concurrent partials
+cannot together exceed the payment.
+
+A refund is **not** a reversal. A reversal says the entry should never have
+existed and is reserved for our own mistakes; a refund says the payment was
+real and the payee gave it back. Both parties see it as its own event, and
+the original stands.
+
+---
+
+### Savings  *(auth)*
+
+A goal is a named **vault** under the customer's own liability
+(`liabilities:user:<id>:vault:<goalId>:<ccy>`), so setting money aside is a
+posting between two buckets of the same balance. Nothing leaves the
+institution: instant, free, and guarded by the same conditional decrement that
+protects a spendable balance. The goal document holds **no** balance — what
+has been saved is folded from postings like everything else.
+
+| Endpoint | Does |
+|---|---|
+| `GET /api/savings/goals` | every goal, with progress, plus saved and spendable totals |
+| `POST /api/savings/goals` | `{ name, target?, deadline?, lock?: { until, penaltyBps } }` — creates no entry; an empty goal holds no money |
+| `GET /api/savings/goals/:goalId/withdrawal-quote?amount=` | what breaking in early would cost |
+| `POST /api/savings/goals/:goalId/contribute` | `{ amount }` *(Idempotency-Key)* |
+| `POST /api/savings/goals/:goalId/withdraw` | `{ amount, confirmPenalty? }` *(Idempotency-Key)* |
+| `DELETE /api/savings/goals/:goalId` | closes it; refused while it still holds money |
+
+The optional lock is a commitment device the customer sets for themselves,
+capped at 2000 bps (20%) — a nudge that can cost more than a fifth of the
+money is a trap. `confirmPenalty` is them having seen the quote and agreed to
+it: if the figure has since changed, the withdrawal is refused rather than
+silently repriced.
+
+---
+
+### Requests  *(auth)*
+
+The asking direction of a wallet, which a ledger alone cannot express: the
+payer is the one who has to act, and they have to be able to say no. A request
+is a claim, not a movement, so it has no postings until it is paid.
+
+| Endpoint | Does |
+|---|---|
+| `GET /api/requests` | what you owe and what you are owed, both lists |
+| `POST /api/requests` | `{ participants: [...], total \| shares, note? }` |
+| `POST /api/requests/:requestId/approve` | pay it |
+| `POST /api/requests/:requestId/decline` | `{ reason? }` |
+| `DELETE /api/requests/:requestId` | withdraw your own |
+| `DELETE /api/requests/group/:groupId` | withdraw a whole bill |
+
+With `total`, the bill divides between **everyone at the table, the requester
+included**, and only the others are asked — a 1,200 dinner with three friends
+asks each of them for 300 and leaves the requester's own 300 alone.
+
+Approving delegates to the ordinary transfer path, so a settled request is
+priced, limited, risk scored and recorded exactly like a payment the payer
+started themselves. Its settlement key is derived from the request id rather
+than supplied by the client, which makes the ledger's unique
+`(idempotencyScope, idempotencyKey)` index the backstop: a request cannot be
+paid twice across retries, devices, or a crash between the transfer and the
+state update. `approve` therefore takes **no** `Idempotency-Key` header.
+
 ---
 
 ### Payments (rail-agnostic)
@@ -297,6 +382,22 @@ conditional update, and only the caller that wins it posts the entry.
 | 409 | `IDEMPOTENT_REPLAY` | Duplicate request collapsed |
 | 409 | `IDEMPOTENCY_IN_PROGRESS` | The first request is still running |
 | 409 | `CONCURRENCY_CONFLICT` | Optimistic-lock collision; retry |
+| 400 | `SPLIT_TOO_SMALL` / `SPLIT_TOO_LARGE` | A split pays 2–20 people |
+| 400 | `DUPLICATE_RECIPIENT` / `DUPLICATE_PARTICIPANT` | Someone named twice |
+| 400 | `SHARE_COUNT_MISMATCH` | One share per recipient, or none at all |
+| 400 | `REFUND_EXCEEDS_PAYMENT` | More than was received (`refundable`) |
+| 403 | `NOT_THE_PAYEE` | Only the person who received a payment can refund it |
+| 409 | `NOT_REFUNDABLE` | Not a transfer — a deposit or payout is reversed by ops |
+| 409 | `ALREADY_REFUNDED` | Nothing left outstanding on that payment |
+| 404 | `GOAL_NOT_FOUND` | No such goal (also returned for another customer's) |
+| 409 | `GOAL_LIMIT_REACHED` / `GOAL_NAME_TAKEN` | 12 active goals, names unique per customer |
+| 409 | `GOAL_CURRENCY_MISMATCH` | Goal holds a different currency |
+| 409 | `PENALTY_CHANGED` | The early-exit fee is no longer what was agreed |
+| 409 | `VAULT_NOT_EMPTY` | Withdraw before closing a goal |
+| 400 | `SELF_REQUEST` / `NO_PARTICIPANTS` / `TOO_MANY_PARTICIPANTS` | Bad request list |
+| 403 | `NOT_THE_PAYER` / `NOT_THE_REQUESTER` | Wrong side of the request |
+| 409 | `ALREADY_PAID` / `REQUEST_DECLINED` / `REQUEST_CANCELLED` / `REQUEST_EXPIRED` | Request is no longer open |
+| 409 | `SETTLEMENT_IN_PROGRESS` | A payment for it is already going through |
 | 422 | `VALIDATION_ERROR` | Input failed validation (`details` array) |
 | 422 | `IDEMPOTENCY_KEY_REUSED` | Same key, different payload — a client bug |
 | 429 | `RATE_LIMIT_*` | Throttled (`AUTH` / `PAYMENT` / `GLOBAL`) |
@@ -318,7 +419,7 @@ Safaricom — which is why it is fully unit-tested without a database.
 src/
 ├── core/                    PURE DOMAIN — no I/O, no framework
 │   ├── money/               Money (BigInt minor units) · currency registry
-│   ├── ledger/              accounts · JournalEntry · flows (every movement)
+│   ├── ledger/              accounts (incl. vaults) · JournalEntry · flows (every movement)
 │   ├── fees/                FeeSchedule — ordered, first-match-wins tariff
 │   ├── limits/              KYC tiers and their caps
 │   └── risk/                weighted, explainable rules engine
@@ -358,8 +459,8 @@ scripts/migrate-to-ledger.js   legacy balances → opening entries
 ## Testing
 
 ```bash
-npm run test:unit          # 124 tests, no database required, ~1s
-npm run test:integration    # 29 tests, needs a MongoDB replica set
+npm run test:unit          # 145 tests, no database required, ~1s
+npm run test:integration    # 59 tests, needs a MongoDB replica set
 npm test                    # both
 ```
 
@@ -368,6 +469,13 @@ allocation never loses a minor unit), the ledger balance invariant, every
 posting flow, fee bands, KYC limits, risk scoring, routing policies, circuit
 breaker transitions and every branch of the payout failover rule. It needs no
 infrastructure because `core/` and `rails/` have no I/O.
+
+The integration suite exercises the invariants that only a real database can
+show: the trial balance after every flow, vault money not being spendable, an
+unaffordable split paying nobody, five simultaneous taps on one money request
+paying exactly once, a failed approval releasing the request rather than
+consuming it, and concurrent partial refunds that cannot together exceed what
+was received.
 
 ### The integration tests need a replica set, not a standalone mongod
 

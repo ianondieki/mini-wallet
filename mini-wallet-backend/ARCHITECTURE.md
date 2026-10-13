@@ -53,7 +53,7 @@ Mongo, or Safaricom.
 └──────────────────────────────────────────────────────────────┘
 ```
 
-The practical payoff: **124 unit tests run in under a second with no
+The practical payoff: **145 unit tests run in under a second with no
 database**, because the rules that are hardest to get right — exact money
 arithmetic, the balance invariant, fee bands, tier limits, risk scoring, rail
 routing — live in `core/` and `rails/`, which have no I/O to mock.
@@ -88,6 +88,7 @@ Sign conventions matter and are easy to get backwards:
 |---|---|---|
 | `liabilities:user:<id>:available` | liability | credit |
 | `liabilities:user:<id>:reserved` | liability | credit |
+| `liabilities:user:<id>:vault:<goalId>` | liability | credit |
 | `assets:rail:<rail>:float` | asset | debit |
 | `revenue:fees:<product>` | revenue | credit |
 | `expenses:rail:<rail>` | expense | debit |
@@ -96,8 +97,56 @@ A customer balance is a **liability**: their money is not ours, we owe it to
 them. That is what makes the balance sheet mean anything, and it is how Wise,
 Monzo and Stripe Treasury model stored value.
 
+A customer's money sits in one of three **buckets**, all under the same
+`liabilities:user:` prefix: spendable, reserved against a payout in flight,
+and set aside in a savings vault. The prefix being shared is deliberate — the
+overdraft guard matches on it, so a vault is protected exactly as a spendable
+balance is — but it means a balance reader must derive the bucket from the
+account **path**, never assume it from the prefix. `customerBucket()` does
+that, and an unrecognised bucket is logged and excluded rather than silently
+counted as spendable. Getting this wrong lets a customer spend saved money
+twice, so it has its own test.
+
 `core/ledger/flows.js` is the complete vocabulary of permitted movements.
 Nothing else assembles postings by hand.
+
+### Four movements worth singling out
+
+**`splitTransfer`** — one debit against N credits in a single entry. Paying
+four people with four transfers can leave two paid and two not, and a client
+has no sensible way to unwind that. Shares are apportioned by largest
+remainder, so an even split of 100.00 three ways is 33.34 / 33.33 / 33.33 and
+adds back up to the total rather than losing or inventing a cent.
+
+**`refund`** — a **forward** entry, not a reversal. A reversal says the
+original should never have existed and is reserved for our own mistakes; a
+refund says the payment was real and the payee chose to return it. Conflating
+them leaves the books unable to answer "did this customer actually pay us in
+March?". The refundable cap is derived from the ledger — the postings of the
+original minus the principal of every refund already issued against it — so
+two concurrent partial refunds cannot together exceed what was received.
+
+This needed one narrow change to the risk engine. Its `pass_through` rule
+fires on money that arrives and leaves again immediately, which is a refund by
+definition; left alone it step-ups every honest merchant refund. Refunds are
+exempt, and the reason is structural rather than convenient: a refund may only
+return money to the original payer, for at most what they sent, so there is no
+destination for a mule to choose. Limits and pricing still treat it as the
+outbound transfer it is.
+
+**`lockToGoal` / `releaseFromGoal`** — between two buckets of the same
+customer's liability. Nothing leaves the institution, so saving is instant and
+free. An optional lock charges a capped penalty for breaking in early; the
+penalty is booked as revenue rather than netted silently off the amount, and
+it is quoted before the customer commits and re-checked at the point of
+withdrawal.
+
+**`settleInternalPayout`** — when a payout's destination turns out to belong
+to another customer, the router picks the internal rail and no money leaves.
+Settling that as an ordinary payout would debit the reservation and credit our
+own float: the books would balance perfectly and the recipient would never be
+paid. That is the worst shape a money bug can take, and it is why this flow
+exists rather than reusing `settlePayout`.
 
 ### The payout lifecycle is two-phase
 
@@ -264,6 +313,26 @@ Ten retried webhooks settle once, because the claim is a conditional update
 and only its winner posts the entry.
 
 ---
+
+## What is not a ledger fact
+
+Two things in this system have no postings until money moves, and keeping them
+out of the ledger is the point.
+
+A **savings goal** is a name for a vault account — what has been saved is the
+vault's balance, folded from postings like every other balance. A `saved` field
+on the goal document would be a second source of truth, which is the one thing
+this codebase is built to not have.
+
+A **money request** is a claim between two people that may never be paid. The
+payer is the one who has to act, and they have to be able to say no, so a
+request is a state machine rather than a movement. Approving one delegates to
+the ordinary transfer path — same pricing, same limits, same risk scoring, same
+overdraft guard — so there is no second, softer way into the books. Its
+settlement key is derived from the request id rather than supplied by the
+client, which makes the ledger's unique `(idempotencyScope, idempotencyKey)`
+index the real guarantee that a request cannot be paid twice: across retries,
+across devices, and across a crash between the transfer and the state update.
 
 ## What is deliberately not here
 
