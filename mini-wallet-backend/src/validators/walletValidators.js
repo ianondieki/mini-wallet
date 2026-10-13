@@ -1,4 +1,4 @@
-import { body, query } from 'express-validator';
+import { body, param, query } from 'express-validator';
 import { isValidKenyanPhone } from '../utils/mpesaHelpers.js';
 import { SUPPORTED_CURRENCIES } from '../core/money/currencies.js';
 
@@ -86,6 +86,66 @@ export const transactionQueryValidator = [
     .toUpperCase()
     .isIn(SUPPORTED_CURRENCIES)
     .withMessage('unsupported currency'),
+];
+
+/** An email or a Kenyan phone number — the two ways a payee is named. */
+const isIdentifier = (v) =>
+  isValidKenyanPhone(v) || /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(String(v ?? '').trim());
+
+export const splitValidator = [
+  body('recipients')
+    .isArray({ min: 2, max: 20 })
+    .withMessage('recipients must be a list of 2-20 emails or phone numbers')
+    .bail()
+    .custom((list) => {
+      if (!list.every(isIdentifier)) {
+        throw new Error('every recipient must be a valid email or Kenyan phone number');
+      }
+      return true;
+    }),
+  currencyRule,
+  // Exactly one of the two ways to say who gets what. Accepting both would
+  // leave the server choosing which one the customer meant.
+  body().custom((_v, { req }) => {
+    const exact = Array.isArray(req.body.shares) && req.body.shares.length > 0;
+    const even = req.body.amount !== undefined && req.body.amount !== null;
+    if (exact && even) {
+      throw new Error('Send either amount (split evenly) or shares (exact), not both');
+    }
+    if (!exact && !even) throw new Error('amount or shares is required');
+    return true;
+  }),
+  body('amount').optional().isFloat({ min: 0.01, max: SANITY_MAX })
+    .withMessage(`amount must be a positive number up to ${SANITY_MAX.toLocaleString()}`),
+  body('shares').optional().isArray({ min: 2, max: 20 })
+    .withMessage('shares must be a list of 2-20 amounts')
+    .bail()
+    .custom((shares, { req }) => {
+      if (shares.length !== (req.body.recipients?.length ?? -1)) {
+        throw new Error('give one share per recipient');
+      }
+      if (!shares.every((s) => Number(s) >= 0.01 && Number(s) <= SANITY_MAX)) {
+        throw new Error('every share must be a positive amount');
+      }
+      return true;
+    }),
+  body('description').optional().trim().isLength({ max: 200 })
+    .withMessage('Description must be 200 characters or fewer'),
+];
+
+export const refundValidator = [
+  body('entryId').trim().isUUID().withMessage('entryId must be the id of a transfer'),
+  currencyRule,
+  // Absent means "refund everything still outstanding", which is the common
+  // case and must stay distinguishable from a zero.
+  body('amount').optional({ nullable: true }).isFloat({ min: 0.01, max: SANITY_MAX })
+    .withMessage('amount must be a positive number'),
+  body('reason').optional().trim().isLength({ max: 140 })
+    .withMessage('reason must be 140 characters or fewer'),
+];
+
+export const entryIdValidator = [
+  param('entryId').trim().isUUID().withMessage('invalid transaction id'),
 ];
 
 export { amountRule, currencyRule };

@@ -132,6 +132,13 @@ export const DEFAULT_RULES = [
       const inbound = ctx.history?.inboundLast1h;
       if (!Money.isMoney(inbound) || inbound.isZero) return null;
       if (ctx.flow === 'deposit') return null;
+      // A refund is this pattern by definition — money came in and is going
+      // straight back out — and it is the one case where the pattern carries
+      // no risk, because the sender cannot choose the destination. A refund
+      // may only return money to the original payer, and only up to what
+      // they sent. There is no mule account to forward to, so firing here
+      // would challenge every honest merchant refund and catch nothing.
+      if (ctx.flow === 'refund') return null;
 
       const ratio = Number(ctx.amount.toDecimal()) / Number(inbound.toDecimal());
       if (ratio < 0.7) return null;

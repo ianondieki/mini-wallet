@@ -230,6 +230,29 @@ describe('risk engine', () => {
     assert.notEqual(result.decision, RiskDecision.ALLOW);
   });
 
+  test('does not call a refund a pass-through, however fast it goes back', () => {
+    // Identical shape to the mule case above — money in, almost all of it
+    // straight back out, account left empty — differing only in the flow.
+    // A refund can only return money to the original payer, and only up to
+    // what they sent, so there is no destination for a mule to choose. Firing
+    // here would step-up every merchant refund and catch nothing.
+    const laundering = {
+      amount: KES('98000'),
+      balanceBefore: KES('100000'),
+      history: { ...baseline().history, inboundLast1h: KES('100000') },
+    };
+    assert.ok(
+      defaultRiskEngine.assess(baseline(laundering)).signals.some((s) => s.id === 'pass_through'),
+      'the same numbers must still fire on a plain transfer'
+    );
+
+    const refund = defaultRiskEngine.assess(baseline({ ...laundering, flow: 'refund' }));
+    assert.ok(
+      !refund.signals.some((s) => s.id === 'pass_through'),
+      'a refund is exempt from pass-through'
+    );
+  });
+
   test('detects structuring just under the reporting threshold', () => {
     const result = defaultRiskEngine.assess(
       baseline({ amount: KES('985000'), balanceBefore: KES('2000000'), history: { ...baseline().history, count24h: 4 } })

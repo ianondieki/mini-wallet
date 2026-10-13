@@ -131,6 +131,20 @@ export const userAvailable = (userId, currency) =>
   `liabilities:user:${userId}:available:${String(currency).toLowerCase()}`;
 
 /**
+ * Money the customer has set aside toward a named goal.
+ *
+ * Still their money and still a liability — a vault is a *bucket* of the same
+ * obligation, not a different kind of thing. Keeping it as a sibling of
+ * `available` under the same `liabilities:user:<id>` subtree means
+ * `userIdFromAccount` keeps working, the non-negative guard keeps applying,
+ * and a vault can never be overdrawn, all without a special case.
+ *
+ * @param {string} userId @param {string} goalId @param {string} currency
+ */
+export const userVault = (userId, goalId, currency) =>
+  `liabilities:user:${userId}:vault:${goalId}:${String(currency).toLowerCase()}`;
+
+/**
  * Customer funds earmarked for an in-flight payout. Money sits here between
  * "user asked to withdraw" and "the rail confirmed settlement", so it is
  * visibly still the customer's money but is not spendable twice.
@@ -186,6 +200,34 @@ export const userIdFromAccount = (path) => {
   return segments[0] === 'liabilities' && segments[1] === 'user' ? segments[2] : null;
 };
 
+/**
+ * Which bucket of a customer's money an account represents.
+ *
+ * The ledger writer and every balance read need this: a vault is not spendable
+ * and a reservation is not either, but both are the customer's. Deriving it
+ * from the path rather than guessing by substring keeps a new bucket from
+ * silently being counted as spendable.
+ *
+ * @param {string} path
+ * @returns {'available'|'reserved'|'vault'|null} null when not a customer account.
+ */
+export const customerBucket = (path) => {
+  const segments = String(path).split(':');
+  if (segments[0] !== 'liabilities' || segments[1] !== 'user') return null;
+  const bucket = segments[3];
+  return bucket === 'available' || bucket === 'reserved' || bucket === 'vault' ? bucket : null;
+};
+
+/**
+ * The goal id a vault account belongs to, or null.
+ * @param {string} path
+ * @returns {string|null}
+ */
+export const goalIdFromAccount = (path) => {
+  const segments = String(path).split(':');
+  return customerBucket(path) === 'vault' ? segments[4] : null;
+};
+
 export default {
   AccountType,
   Direction,
@@ -194,6 +236,7 @@ export default {
   signFor,
   userAvailable,
   userReserved,
+  userVault,
   railFloat,
   railClearing,
   feeRevenue,
@@ -201,4 +244,7 @@ export default {
   railExpense,
   lossExpense,
   openingEquity,
+  customerBucket,
+  goalIdFromAccount,
+  userIdFromAccount,
 };

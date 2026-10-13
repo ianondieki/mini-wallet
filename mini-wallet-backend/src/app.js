@@ -8,6 +8,8 @@ import { globalLimiter } from './middleware/rateLimiter.js';
 import { notFound, errorHandler } from './middleware/errorHandler.js';
 import authRoutes from './routes/auth.js';
 import walletRoutes from './routes/wallet.js';
+import savingsRoutes from './routes/savings.js';
+import requestRoutes from './routes/requests.js';
 import mpesaRoutes from './routes/mpesa.js';
 import paymentRoutes from './routes/payments.js';
 import opsRoutes from './routes/ops.js';
@@ -107,6 +109,8 @@ export const createApp = () => {
   // ── API routes ────────────────────────────────────────────────────────
   app.use('/api/auth', authRoutes);
   app.use('/api/wallet', walletRoutes);
+  app.use('/api/savings', savingsRoutes);
+  app.use('/api/requests', requestRoutes);
   app.use('/api/payments', paymentRoutes);
   app.use('/api/ops', opsRoutes);
   // Legacy paths — kept because Safaricom has the callback URLs registered.

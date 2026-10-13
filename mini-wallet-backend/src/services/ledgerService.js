@@ -3,7 +3,10 @@ import { LedgerEntry } from '../models/LedgerEntry.js';
 import { AccountBalance } from '../models/AccountBalance.js';
 import { Money } from '../core/money/Money.js';
 import { JournalEntry, foldBalances } from '../core/ledger/JournalEntry.js';
-import { signFor, userIdFromAccount, parseAccount, userAvailable } from '../core/ledger/accounts.js';
+import {
+  signFor, userIdFromAccount, parseAccount, userAvailable,
+  customerBucket, goalIdFromAccount,
+} from '../core/ledger/accounts.js';
 import { AppError } from '../utils/ApiError.js';
 import { logger } from '../config/logger.js';
 
@@ -207,16 +210,37 @@ export const getBalance = async (account, currency, { session } = {}) => {
 };
 
 /**
- * Every balance a user holds, keyed by "available"/"reserved" and currency.
+ * Every balance a user holds, split by what the money can actually do.
+ *
+ * The bucket is derived from the account path rather than guessed from a
+ * substring. That matters: the previous form treated anything that was not
+ * `:reserved:` as spendable, so the day a new bucket appeared — a savings
+ * vault — its balance would have been reported as available and the customer
+ * could have spent money they had deliberately set aside. An account whose
+ * bucket is unrecognised is now left out rather than counted as spendable.
+ *
  * @param {string} userId
- * @returns {Promise<{available: Record<string, Money>, reserved: Record<string, Money>}>}
+ * @returns {Promise<{available: Record<string, Money>, reserved: Record<string, Money>,
+ *                    vaults: Record<string, Record<string, Money>>}>}
  */
 export const getUserBalances = async (userId) => {
   const rows = await AccountBalance.find({ userId }).lean();
-  const out = { available: {}, reserved: {} };
+  const out = { available: {}, reserved: {}, vaults: {} };
+
   for (const row of rows) {
-    const bucket = row.account.includes(':reserved:') ? 'reserved' : 'available';
-    out[bucket][row.currency] = Money.fromMinor(row.minor, row.currency);
+    const bucket = customerBucket(row.account);
+    const money = Money.fromMinor(row.minor, row.currency);
+
+    if (bucket === 'vault') {
+      const goalId = goalIdFromAccount(row.account);
+      out.vaults[goalId] = { ...(out.vaults[goalId] ?? {}), [row.currency]: money };
+    } else if (bucket === 'available' || bucket === 'reserved') {
+      out[bucket][row.currency] = money;
+    } else {
+      logger.warn('Unrecognised customer account bucket — excluded from balances', {
+        account: row.account,
+      });
+    }
   }
   return out;
 };
