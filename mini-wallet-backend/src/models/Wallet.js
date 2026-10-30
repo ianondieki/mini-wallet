@@ -1,3 +1,13 @@
+/**
+ * @deprecated Superseded by the double-entry ledger.
+ *
+ * A balance is now the sum of an account's postings (see core/ledger and
+ * services/ledgerService), not a mutable field. This model is retained for
+ * ONE purpose: `scripts/migrate-to-ledger.js` reads it to create opening
+ * balances for existing customers.
+ *
+ * Nothing writes to it. Once every deployment has migrated it can be dropped.
+ */
 import mongoose from 'mongoose';
 
 const walletSchema = new mongoose.Schema(

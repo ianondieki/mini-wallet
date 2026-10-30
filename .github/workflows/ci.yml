@@ -1,0 +1,146 @@
+name: CI
+
+on:
+  push:
+    branches: ['**']
+  pull_request:
+  workflow_dispatch:
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  # ── Fast feedback: the whole domain core, no database ──────────────────
+  backend-unit:
+    name: Backend unit tests
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: mini-wallet-backend
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: mini-wallet-backend/package-lock.json
+
+      - run: npm ci
+
+      # core/ and rails/ have no I/O, so this covers exact money arithmetic,
+      # the ledger balance invariant, fee bands, KYC limits, risk scoring and
+      # rail routing without any infrastructure.
+      - name: Run unit tests
+        run: npm run test:unit
+
+  # ── The money paths, against a real replica set ────────────────────────
+  backend-integration:
+    name: Backend integration tests
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: mini-wallet-backend
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: mini-wallet-backend/package-lock.json
+
+      - run: npm ci
+
+      # A single-node REPLICA SET, not a standalone mongod: the wallet's
+      # atomicity relies on multi-document transactions, which standalone
+      # MongoDB does not support. Started with plain docker rather than a
+      # marketplace action so there is no third-party dependency in the
+      # pipeline that verifies money movement.
+      - name: Start MongoDB replica set
+        id: mongo
+        working-directory: .
+        run: |
+          set -euo pipefail
+          docker run -d --name mongo -p 27017:27017 \
+            mongo:8 --replSet rs0 --bind_ip_all
+
+          echo "Waiting for mongod to accept connections..."
+          for i in $(seq 1 45); do
+            if docker exec mongo mongosh --quiet --eval 'db.adminCommand({ping:1})' >/dev/null 2>&1; then
+              echo "mongod is up"; break
+            fi
+            if [ "$i" = "45" ]; then
+              echo "mongod never came up"; docker logs mongo; exit 1
+            fi
+            sleep 2
+          done
+
+          docker exec mongo mongosh --quiet --eval \
+            'rs.initiate({_id:"rs0",members:[{_id:0,host:"127.0.0.1:27017"}]})'
+
+          echo "Waiting for the member to become PRIMARY..."
+          for i in $(seq 1 45); do
+            if docker exec mongo mongosh --quiet --eval 'db.hello().isWritablePrimary' 2>/dev/null | grep -q true; then
+              echo "replica set is primary"; break
+            fi
+            if [ "$i" = "45" ]; then
+              echo "never became primary"; docker logs mongo; exit 1
+            fi
+            sleep 2
+          done
+
+      - name: Run integration tests
+        env:
+          TEST_MONGO_URI: mongodb://127.0.0.1:27017/mini_wallet_ci?replicaSet=rs0
+          # Without this a database that failed to start would let the suite
+          # skip itself and report a green build that tested nothing.
+          REQUIRE_TEST_DB: 'true'
+          NODE_ENV: test
+          JWT_SECRET: ci-access-secret-not-used-anywhere-real
+          JWT_REFRESH_SECRET: ci-refresh-secret-not-used-anywhere-real
+          # The app logs an info line per registration and per ledger posting.
+          # Useful when debugging one test, overwhelming across twenty-nine.
+          LOG_LEVEL: error
+        run: |
+          set -o pipefail
+          npm run test:integration 2>&1 | tee test-output.txt
+
+      # Only when the database itself failed — otherwise mongod's log is noise
+      # that buries the assertion it was added to help diagnose.
+      - name: MongoDB logs
+        if: failure() && steps.mongo.outcome == 'failure'
+        working-directory: .
+        run: docker logs --tail 50 mongo || true
+
+      # Last, so it is what you see first when opening a failed run.
+      - name: Failing assertions
+        if: failure()
+        run: |
+          echo "── Failing tests ─────────────────────────────────────────"
+          grep -E -A 25 '^ *not ok' test-output.txt | head -250 || \
+            echo "(no assertion failures found — the suite probably crashed)"
+          echo "── Summary ───────────────────────────────────────────────"
+          grep -E '^# (tests|pass|fail|skipped)' test-output.txt || true
+
+  # ── Frontend ───────────────────────────────────────────────────────────
+  ui:
+    name: UI tests and build
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: mini-wallet-ui
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: mini-wallet-ui/package-lock.json
+
+      - run: npm ci
+      - run: npm test
+      # A green test suite that does not compile is not green.
+      - run: npm run build

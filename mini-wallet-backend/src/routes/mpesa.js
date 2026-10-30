@@ -1,66 +1,53 @@
 import { Router } from 'express';
-import {
-  stkPush,
-  stkCallback,
-  stkStatus,
-  b2cWithdraw,
-  b2cResult,
-  b2cTimeout,
-} from '../controllers/mpesaController.js';
+import { deposit, payout, getOrder } from '../controllers/paymentsController.js';
+import { railCallback } from '../controllers/webhookController.js';
 import { protect } from '../middleware/auth.js';
 import { validate } from '../middleware/validate.js';
 import { idempotency } from '../middleware/idempotency.js';
 import { paymentLimiter } from '../middleware/rateLimiter.js';
-import { logger } from '../config/logger.js';
 import {
   topupValidator,
   withdrawValidator,
   statusParamValidator,
 } from '../validators/mpesaValidators.js';
 
+/**
+ * M-Pesa compatibility routes.
+ *
+ * These paths are kept for two reasons, and the second is the important one:
+ *
+ * 1. The existing client calls them.
+ * 2. **Safaricom has them registered.** The callback URLs are configured on
+ *    the Daraja side against a live short code. Moving them is a production
+ *    change coordinated with Safaricom, not a refactor — and until that
+ *    happens, a payment that lands here and 404s is money we have taken and
+ *    not credited.
+ *
+ * They are now thin: the handlers are the rail-agnostic ones, and the
+ * callbacks go through the M-Pesa adapter's own authentication and parsing
+ * rather than the hand-rolled IP check that used to live in this file.
+ *
+ * New integrations should use /api/payments.
+ */
 const router = Router();
 
-/**
- * Restrict public callback routes to Safaricom's source IPs. If the
- * whitelist env var is empty the check is skipped (useful locally / in
- * sandbox where the source IP varies).
- */
-const safaricomIpWhitelist = (req, res, next) => {
-  const raw = process.env.SAFARICOM_IP_WHITELIST || '';
-  const allow = raw.split(',').map((s) => s.trim()).filter(Boolean);
-  if (allow.length === 0) return next();
+/* ── Authenticated endpoints ──────────────────────────────────────────── */
 
-  // req.ip respects `trust proxy`; strip IPv6-mapped IPv4 prefix.
-  const ip = (req.ip || '').replace('::ffff:', '');
-  if (allow.includes(ip)) return next();
+router.post('/topup', protect, paymentLimiter, idempotency({ required: false }), topupValidator, validate, deposit);
 
-  logger.warn('Rejected callback from non-whitelisted IP', { ip });
-  // Still 200 so Safaricom doesn't hammer retries, but we ignore the body.
-  return res.status(200).json({ ResultCode: 0, ResultDesc: 'Accepted' });
-};
+router.post('/withdraw', protect, paymentLimiter, idempotency(), withdrawValidator, validate, payout);
 
-/* ── Authenticated payment endpoints ──────────────────────────────────── */
-router.post('/topup', protect, paymentLimiter, topupValidator, validate, stkPush);
-router.post(
-  '/withdraw',
-  protect,
-  paymentLimiter,
-  idempotency,
-  withdrawValidator,
-  validate,
-  b2cWithdraw
-);
-router.get(
-  '/status/:checkoutRequestId',
-  protect,
-  statusParamValidator,
-  validate,
-  stkStatus
-);
+router.get('/status/:checkoutRequestId', protect, statusParamValidator, validate, getOrder);
 
-/* ── Public Safaricom callbacks (no JWT; IP-whitelisted) ──────────────── */
-router.post('/callback', safaricomIpWhitelist, stkCallback);
-router.post('/b2c/result', safaricomIpWhitelist, b2cResult);
-router.post('/b2c/timeout', safaricomIpWhitelist, b2cTimeout);
+/* ── Public Safaricom callbacks ───────────────────────────────────────────
+ * Unauthenticated by JWT — Safaricom has no credential to present. The rail
+ * adapter verifies them instead (shared secret + source IP allowlist, failing
+ * closed in production), and an unverified callback is acknowledged and
+ * dropped rather than rejected, so Safaricom does not retry forever.
+ * ──────────────────────────────────────────────────────────────────────── */
+
+router.post('/callback', railCallback('mpesa'));
+router.post('/b2c/result', railCallback('mpesa'));
+router.post('/b2c/timeout', railCallback('mpesa', { treatAsFailure: true }));
 
 export default router;

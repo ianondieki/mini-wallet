@@ -14,6 +14,7 @@ export default function BottomNav() {
       className="glass fixed inset-x-0 bottom-0 z-30 border-t border-border/80 md:hidden"
       style={{ paddingBottom: 'env(safe-area-inset-bottom)' }}
     >
+<<<<<<< HEAD
       <div className="flex">
         {MOBILE_NAV_ITEMS.map(({ to, short, icon: Icon }) => (
           <NavLink
@@ -50,6 +51,34 @@ export default function BottomNav() {
           </NavLink>
         ))}
       </div>
+=======
+      {NAV_ITEMS.filter((item) => item.primary).map(({ to, label, icon: Icon }) => (
+        <NavLink
+          key={to}
+          to={to}
+          aria-label={label}
+          className={({ isActive }) =>
+            cn(
+              'relative flex flex-1 flex-col items-center gap-1 py-2.5 text-[10px] font-medium transition-colors',
+              isActive ? 'text-primary' : 'text-text-muted'
+            )
+          }
+        >
+          {({ isActive }) => (
+            <>
+              {isActive && (
+                <motion.span
+                  layoutId="active-bottom"
+                  className="absolute top-0 h-0.5 w-8 rounded-full bg-primary"
+                />
+              )}
+              <Icon className="h-5 w-5" />
+              {label.split(' ')[0]}
+            </>
+          )}
+        </NavLink>
+      ))}
+>>>>>>> origin/feat/wallet-round-2
     </nav>
   );
 }

@@ -3,6 +3,8 @@ import { motion } from 'framer-motion';
 import {
   LayoutDashboard,
   Send,
+  Users,
+  PiggyBank,
   PlusCircle,
   Banknote,
   Receipt,
@@ -14,6 +16,7 @@ import logo from '../../assets/logo.svg';
 import { useAuth } from '../../hooks/useAuth.js';
 import { cn } from '../../lib/utils.js';
 
+<<<<<<< HEAD
 /** Full nav for desktop sidebar. */
 export const NAV_ITEMS = [
   { to: '/dashboard', label: 'Home', short: 'Home', icon: LayoutDashboard },
@@ -22,6 +25,23 @@ export const NAV_ITEMS = [
   { to: '/withdraw', label: 'Withdraw', short: 'Cash out', icon: Banknote },
   { to: '/transactions', label: 'Activity', short: 'Activity', icon: Receipt },
   { to: '/settings', label: 'Settings', short: 'Settings', icon: Settings, desktopOnly: true },
+=======
+/**
+ * The sidebar shows every destination. `primary` marks the five that also
+ * earn a slot in the mobile bottom bar — eight tabs across a phone leaves
+ * each one too small to hit, so the rest are reached from the sidebar on a
+ * wider screen or from the action they belong to.
+ */
+export const NAV_ITEMS = [
+  { to: '/dashboard', label: 'Dashboard', icon: LayoutDashboard, primary: true },
+  { to: '/send', label: 'Send Money', icon: Send, primary: true },
+  { to: '/split', label: 'Split', icon: Users, primary: true },
+  { to: '/savings', label: 'Savings', icon: PiggyBank, primary: true },
+  { to: '/topup', label: 'Top Up', icon: PlusCircle },
+  { to: '/withdraw', label: 'Withdraw', icon: Banknote },
+  { to: '/transactions', label: 'Transactions', icon: Receipt, primary: true },
+  { to: '/settings', label: 'Settings', icon: Settings },
+>>>>>>> origin/feat/wallet-round-2
 ];
 
 /** Primary mobile destinations (5 max — Settings lives in TopBar). */

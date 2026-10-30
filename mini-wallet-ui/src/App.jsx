@@ -12,6 +12,8 @@ import Dashboard from './pages/Dashboard.jsx';
 import TopUp from './pages/TopUp.jsx';
 import Withdraw from './pages/Withdraw.jsx';
 import Send from './pages/Send.jsx';
+import Split from './pages/Split.jsx';
+import Savings from './pages/Savings.jsx';
 import Transactions from './pages/Transactions.jsx';
 import Settings from './pages/Settings.jsx';
 
@@ -56,6 +58,8 @@ function AppRoutes() {
       >
         <Route path="/dashboard" element={<Dashboard />} />
         <Route path="/send" element={<Send />} />
+        <Route path="/split" element={<Split />} />
+        <Route path="/savings" element={<Savings />} />
         <Route path="/topup" element={<TopUp />} />
         <Route path="/withdraw" element={<Withdraw />} />
         <Route path="/transactions" element={<Transactions />} />

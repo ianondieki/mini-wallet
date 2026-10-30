@@ -4,20 +4,34 @@
  */
 
 /**
- * Daraja timestamp in the format YYYYMMDDHHmmss (server local time).
+ * Daraja timestamp in the format YYYYMMDDHHmmss, always in East Africa Time
+ * (Africa/Nairobi, UTC+3).
+ *
+ * The STK "password" is base64(ShortCode + Passkey + Timestamp) and Daraja
+ * validates the timestamp against EAT. Deriving it from the server's local
+ * clock breaks in production, where hosts almost always run in UTC — the
+ * value would be 3 hours off and every STK push would be rejected. We pin the
+ * timezone explicitly so the result is correct no matter where the code runs.
+ *
+ * @param {Date} [date=new Date()]
  * @returns {string}
  */
-export const getTimestamp = () => {
-  const d = new Date();
-  const pad = (n) => String(n).padStart(2, '0');
-  return (
-    `${d.getFullYear()}` +
-    `${pad(d.getMonth() + 1)}` +
-    `${pad(d.getDate())}` +
-    `${pad(d.getHours())}` +
-    `${pad(d.getMinutes())}` +
-    `${pad(d.getSeconds())}`
-  );
+export const getTimestamp = (date = new Date()) => {
+  const parts = new Intl.DateTimeFormat('en-GB', {
+    timeZone: 'Africa/Nairobi',
+    year: 'numeric',
+    month: '2-digit',
+    day: '2-digit',
+    hour: '2-digit',
+    minute: '2-digit',
+    second: '2-digit',
+    hour12: false,
+  }).formatToParts(date);
+
+  const get = (type) => parts.find((p) => p.type === type)?.value || '';
+  // Some engines emit "24" for midnight under hour12:false — normalise it.
+  const hour = get('hour') === '24' ? '00' : get('hour');
+  return `${get('year')}${get('month')}${get('day')}${hour}${get('minute')}${get('second')}`;
 };
 
 /**

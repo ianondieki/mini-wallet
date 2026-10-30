@@ -2,7 +2,6 @@ import mongoose from 'mongoose';
 import jwt from 'jsonwebtoken';
 import crypto from 'node:crypto';
 import { User } from '../models/User.js';
-import { Wallet } from '../models/Wallet.js';
 import { RefreshToken } from '../models/RefreshToken.js';
 import { AppError } from '../utils/ApiError.js';
 import { asyncHandler } from '../utils/asyncHandler.js';
@@ -73,17 +72,11 @@ const issueTokens = async (res, user) => {
 export const register = asyncHandler(async (req, res) => {
   const { name, email, phone, password } = req.body;
 
-  const session = await mongoose.startSession();
-  let user;
-  try {
-    await session.withTransaction(async () => {
-      const created = await User.create([{ name, email, phone, password }], { session });
-      user = created[0];
-      await Wallet.create([{ user: user._id, balance: 0 }], { session });
-    });
-  } finally {
-    await session.endSession();
-  }
+  // No wallet document is created. A balance is the sum of an account's
+  // ledger postings, so a customer who has never transacted simply has no
+  // postings — and therefore a balance of zero — without a row asserting it.
+  // That removes the second source of truth the ledger exists to eliminate.
+  const user = await User.create({ name, email, phone, password });
 
   const accessToken = await issueTokens(res, user);
   logger.info('User registered', { userId: user.id, phone: maskPhone(user.phone) });
