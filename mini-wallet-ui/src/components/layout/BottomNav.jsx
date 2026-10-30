@@ -11,7 +11,7 @@ export default function BottomNav() {
       className="glass fixed inset-x-0 bottom-0 z-30 flex border-t border-border md:hidden"
       style={{ paddingBottom: 'env(safe-area-inset-bottom)' }}
     >
-      {NAV_ITEMS.map(({ to, label, icon: Icon }) => (
+      {NAV_ITEMS.filter((item) => item.primary).map(({ to, label, icon: Icon }) => (
         <NavLink
           key={to}
           to={to}

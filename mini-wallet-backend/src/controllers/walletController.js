@@ -349,3 +349,73 @@ export const searchRecipients = asyncHandler(async (req, res) => {
     },
   });
 });
+
+/**
+ * Pay several people in one atomic entry.
+ *
+ * `recipients` is a list of emails or phone numbers. Either pass `amount` and
+ * let the server apportion it evenly, or pass a matching `shares` array for
+ * exact figures. The even split conserves every minor unit, so three ways out
+ * of 100.00 comes back as 33.34 / 33.33 / 33.33.
+ *
+ * @route POST /api/wallet/split
+ */
+export const split = asyncHandler(async (req, res) => {
+  assertCanTransact(req.user);
+
+  const currency = String(req.body.currency || DEFAULT_CURRENCY).toUpperCase();
+  const recipients = req.body.recipients;
+  const exact = Array.isArray(req.body.shares) && req.body.shares.length > 0;
+
+  const result = await payments.splitPayment({
+    user: req.user,
+    recipients,
+    amount: exact ? undefined : parseAmount(req.body.amount, currency),
+    shares: exact ? req.body.shares.map((s) => parseAmount(s, currency)) : undefined,
+    description: req.body.description,
+    idempotencyKey: req.idempotencyKey,
+    device: req.device,
+  });
+
+  res.status(201).json({ success: true, message: 'Split sent', data: result });
+});
+
+/**
+ * Give back money that was received.
+ *
+ * Only the payee can refund, the amount defaults to everything still
+ * refundable, and partial refunds may be repeated up to what was received.
+ *
+ * @route POST /api/wallet/refund
+ */
+export const refund = asyncHandler(async (req, res) => {
+  assertCanTransact(req.user);
+
+  const currency = String(req.body.currency || DEFAULT_CURRENCY).toUpperCase();
+  const partial = req.body.amount !== undefined && req.body.amount !== null;
+
+  const result = await payments.refundTransfer({
+    user: req.user,
+    entryId: String(req.body.entryId),
+    amount: partial ? parseAmount(req.body.amount, currency) : undefined,
+    reason: req.body.reason,
+    idempotencyKey: req.idempotencyKey,
+    device: req.device,
+  });
+
+  res.status(201).json({ success: true, message: 'Refund sent', data: result });
+});
+
+/**
+ * What is still refundable on a payment this customer received, and why.
+ * Read-only, so it takes no idempotency key.
+ *
+ * @route GET /api/wallet/transactions/:entryId/refundable
+ */
+export const getRefundable = asyncHandler(async (req, res) => {
+  const result = await payments.refundableAmount({
+    user: req.user,
+    entryId: String(req.params.entryId),
+  });
+  res.json({ success: true, data: result });
+});

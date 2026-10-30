@@ -2,7 +2,7 @@ import mongoose from 'mongoose';
 import { randomUUID } from 'node:crypto';
 import { Money } from '../core/money/Money.js';
 import * as flows from '../core/ledger/flows.js';
-import { userAvailable, userReserved } from '../core/ledger/accounts.js';
+import { userAvailable, userReserved, feeRevenue } from '../core/ledger/accounts.js';
 import { defaultFeeSchedule } from '../core/fees/FeeSchedule.js';
 import { checkLimits, KycTier } from '../core/limits/tiers.js';
 import { defaultRiskEngine, RiskDecision } from '../core/risk/engine.js';
@@ -205,7 +205,19 @@ const buildRiskContext = async ({ user, flow, amount, counterpartyId, device, ba
  * @param {object} params
  * @returns {Promise<{risk: object, usage: object}>}
  */
-const gate = async ({ user, flow, amount, counterpartyId, device, inbound = false }) => {
+const gate = async ({
+  user,
+  flow,
+  amount,
+  counterpartyId,
+  device,
+  inbound = false,
+  // What the *risk engine* should call this movement, when that differs from
+  // what the licence calls it. A refund is an outbound transfer for limits
+  // and pricing, but the risk rules need to know it is a refund — see the
+  // pass_through rule.
+  riskFlow = flow,
+}) => {
   const currency = amount.currency;
   const tier = user.kycTier ?? KycTier.TIER_0;
   const usage = await getUsage(user.id, currency);
@@ -242,7 +254,14 @@ const gate = async ({ user, flow, amount, counterpartyId, device, inbound = fals
   }
 
   const risk = defaultRiskEngine.assess(
-    await buildRiskContext({ user, flow, amount, counterpartyId, device, balance: usage.balance })
+    await buildRiskContext({
+      user,
+      flow: riskFlow,
+      amount,
+      counterpartyId,
+      device,
+      balance: usage.balance,
+    })
   );
 
   if (risk.decision === RiskDecision.BLOCK) {
@@ -481,6 +500,476 @@ export const transfer = async ({
     fee: fee.toJSON(),
     total: amount.plus(fee).toJSON(),
     recipient: { name: recipient.name, email: recipient.email },
+    status: 'succeeded',
+    createdAt: entry.occurredAt,
+  };
+};
+
+/* ──────────────────────────────────────────────────────────────────────────
+ * Split payments — one debit, many credits
+ * ────────────────────────────────────────────────────────────────────────── */
+
+/** Most people a single split may pay. Past this it is a payroll run. */
+const MAX_SPLIT_RECIPIENTS = 20;
+
+/**
+ * Resolve a list of recipient identifiers, rejecting the sender and any
+ * duplicate. Order is preserved so the caller's shares still line up.
+ *
+ * @param {string} senderId
+ * @param {string[]} identifiers
+ * @returns {Promise<Array<{id: string, name: string, email: string}>>}
+ */
+const resolveMany = async (senderId, identifiers) => {
+  const people = await Promise.all(identifiers.map((id) => resolveRecipient(id)));
+  const seen = new Set();
+  for (const person of people) {
+    if (person.id === senderId) {
+      throw new AppError('You cannot include yourself in a split', 400, 'SELF_TRANSFER');
+    }
+    if (seen.has(person.id)) {
+      throw new AppError(
+        `${person.name} appears twice in this split`,
+        400,
+        'DUPLICATE_RECIPIENT'
+      );
+    }
+    seen.add(person.id);
+  }
+  return people;
+};
+
+/**
+ * Pay several people at once, as a single journal entry.
+ *
+ * Two things make this worth having rather than a loop over
+ * {@link transfer}. First, **atomicity**: paying four people in four
+ * transfers can leave two paid and two not, and there is no sensible way to
+ * unwind that from a client. One entry either posts in full or not at all.
+ * Second, **exactness**: an even split of 100.00 three ways is not
+ * 33.33 × 3, and dividing with floats either loses a cent or invents one.
+ * `Money#split` uses largest-remainder apportionment, so the shares always
+ * add back up to the total.
+ *
+ * Pricing is deliberately per-split, not per-leg: charging each recipient as
+ * a separate transfer would make splitting four ways cost four times as much
+ * as sending four times, which is backwards. (In the default tariff
+ * in-network transfers are free anyway, so this only bites a deployment that
+ * prices them.)
+ *
+ * @param {object}   params
+ * @param {object}   params.user
+ * @param {string[]} params.recipients   Emails or phone numbers.
+ * @param {Money}    [params.amount]     Total, when splitting evenly.
+ * @param {Money[]}  [params.shares]     Exact per-recipient amounts instead.
+ * @param {string}   [params.description]
+ * @param {string}   [params.idempotencyKey]
+ * @param {object}   [params.device]
+ * @returns {Promise<object>}
+ */
+export const splitPayment = async ({
+  user,
+  recipients,
+  amount,
+  shares,
+  description,
+  idempotencyKey,
+  device,
+}) => {
+  if (!Array.isArray(recipients) || recipients.length < 2) {
+    throw new AppError('A split needs at least two recipients', 400, 'SPLIT_TOO_SMALL');
+  }
+  if (recipients.length > MAX_SPLIT_RECIPIENTS) {
+    throw new AppError(
+      `A split can pay at most ${MAX_SPLIT_RECIPIENTS} people at once`,
+      400,
+      'SPLIT_TOO_LARGE'
+    );
+  }
+
+  const people = await resolveMany(user.id, recipients);
+
+  // Either the caller gave exact shares, or we apportion the total evenly.
+  let amounts;
+  let total;
+  if (shares) {
+    if (shares.length !== people.length) {
+      throw new AppError(
+        'Give one share per recipient, or no shares at all for an even split',
+        400,
+        'SHARE_COUNT_MISMATCH'
+      );
+    }
+    amounts = shares;
+    total = shares.reduce((acc, s) => acc.plus(s), Money.zero(shares[0].currency));
+  } else {
+    amounts = amount.split(people.length);
+    total = amount;
+  }
+
+  const { risk } = await gate({
+    user,
+    flow: 'transfer',
+    amount: total,
+    // No single counterparty, so the velocity signals that key off one are
+    // simply absent rather than misattributed to the first recipient.
+    counterpartyId: null,
+    device,
+  });
+
+  const { fee } = defaultFeeSchedule.quote({
+    flow: 'transfer',
+    amount: total,
+    tier: user.kycTier ?? KycTier.TIER_0,
+  });
+
+  const entry = flows.splitTransfer({
+    fromUserId: user.id,
+    shares: people.map((person, i) => ({ userId: person.id, amount: amounts[i] })),
+    fee,
+    narrative: `Split of ${total} between ${people.length} people`,
+    metadata: {
+      description: description?.trim(),
+      riskScore: risk.score,
+      fromUserId: user.id,
+    },
+  });
+
+  const session = await mongoose.startSession();
+  try {
+    await session.withTransaction(async () => {
+      await ledger.post(entry, { session, idempotencyKey, idempotencyScope: user.id });
+      await outbox.enqueue(
+        {
+          type: 'transfer.split.completed',
+          entryId: entry.id,
+          userId: user.id,
+          payload: {
+            entryId: entry.id,
+            from: user.id,
+            total: total.toJSON(),
+            fee: fee.toJSON(),
+            shares: people.map((person, i) => ({
+              to: person.id,
+              amount: amounts[i].toJSON(),
+            })),
+          },
+        },
+        { session }
+      );
+    });
+  } catch (err) {
+    if (err?.code === 11000) {
+      throw new AppError('Duplicate split ignored', 409, 'IDEMPOTENT_REPLAY');
+    }
+    throw err;
+  } finally {
+    await session.endSession();
+  }
+
+  logger.info('Split payment completed', {
+    entryId: entry.id,
+    from: user.id,
+    recipients: people.length,
+    total: total.toString(),
+  });
+
+  return {
+    id: entry.id,
+    total: total.toJSON(),
+    fee: fee.toJSON(),
+    charged: total.plus(fee).toJSON(),
+    shares: people.map((person, i) => ({
+      recipient: { name: person.name, email: person.email },
+      amount: amounts[i].toJSON(),
+    })),
+    status: 'succeeded',
+    createdAt: entry.occurredAt,
+  };
+};
+
+/* ──────────────────────────────────────────────────────────────────────────
+ * Refunds — giving money back
+ * ────────────────────────────────────────────────────────────────────────── */
+
+/**
+ * How long after a transfer a *full* refund also returns the fee the payer
+ * paid. Outside this window the principal comes back but the fee does not:
+ * the transfer happened, it cost us to carry, and a payee who can hand back
+ * the platform's revenue indefinitely is a hole in the P&L.
+ */
+const FEE_REFUND_WINDOW_HOURS = Number(process.env.FEE_REFUND_WINDOW_HOURS || 24);
+
+/** Flows a refund can be issued against. */
+const REFUNDABLE_FLOWS = new Set(['transfer', 'transfer.split']);
+
+/**
+ * Sum the postings of an entry that move money in one direction on one
+ * account. Postings carry positive minor units and a direction, so this is
+ * just a filtered fold — no sign juggling.
+ *
+ * @param {object} entry   A persisted LedgerEntry (lean document).
+ * @param {string} account
+ * @param {'debit'|'credit'} direction
+ * @param {string} currency
+ * @returns {Money}
+ */
+const sumPostings = (entry, account, direction, currency) =>
+  (entry.postings ?? [])
+    .filter((p) => p.account === account && p.direction === direction)
+    .reduce((acc, p) => acc.plus(Money.fromMinor(p.amount, p.currency)), Money.zero(currency));
+
+/**
+ * Give back money that was received.
+ *
+ * A refund is **not** a reversal. A reversal says the entry should never have
+ * existed and is reserved for our own mistakes; it is posted by operations and
+ * mirrors the original exactly. A refund says the payment was real and the
+ * payee has chosen to return it — so it is a new, forward movement, initiated
+ * by the payee, and it shows up in both parties' history as its own event.
+ * Conflating the two is how a ledger ends up unable to answer "did this
+ * customer actually pay us in March?".
+ *
+ * Partial refunds are allowed and may be repeated, up to what was received.
+ * The cap is derived from the ledger — the postings of the original entry
+ * minus the principal of every refund already issued against it — so two
+ * concurrent partial refunds cannot together exceed the original. (The
+ * ledger's conditional decrement is still the authority on whether the payee
+ * can afford it.)
+ *
+ * @param {object} params
+ * @param {object} params.user          The payee, giving money back.
+ * @param {string} params.entryId       The transfer being refunded.
+ * @param {Money}  [params.amount]      Defaults to everything still refundable.
+ * @param {string} [params.reason]
+ * @param {string} [params.idempotencyKey]
+ * @param {object} [params.device]
+ * @returns {Promise<object>}
+ */
+/**
+ * Work out what a customer may still refund on a payment they received, and
+ * why. Shared by the refund endpoint and the read-only quote in front of it,
+ * so the number the customer is shown is the number that will be enforced.
+ *
+ * @param {object} params
+ * @param {object} params.user
+ * @param {string} params.entryId
+ * @returns {Promise<object>}
+ */
+const assessRefund = async ({ user, entryId }) => {
+  const original = await LedgerEntry.findOne({ entryId }).lean();
+  if (!original) throw new AppError('Transaction not found', 404, 'ENTRY_NOT_FOUND');
+  if (!REFUNDABLE_FLOWS.has(original.flow)) {
+    throw new AppError(
+      'Only a transfer can be refunded. A deposit or withdrawal is reversed through support.',
+      409,
+      'NOT_REFUNDABLE'
+    );
+  }
+
+  const payerId = original.metadata?.fromUserId ?? null;
+  if (!payerId) {
+    throw new AppError('That transaction has no identifiable payer', 409, 'NOT_REFUNDABLE');
+  }
+  if (payerId === user.id) {
+    throw new AppError(
+      'You sent this payment. Only the person who received it can refund it.',
+      403,
+      'NOT_THE_PAYEE'
+    );
+  }
+
+  const currency = original.currencies?.[0] ?? 'KES';
+  const payeeAccount = userAvailable(user.id, currency);
+  const received = sumPostings(original, payeeAccount, 'credit', currency);
+  if (!received.isPositive) {
+    throw new AppError('You did not receive this payment', 403, 'NOT_THE_PAYEE');
+  }
+
+  // What is left to give back: received, less the principal of every refund
+  // already posted against this entry. The principal is the debit against
+  // *this* payee — a fee refund debits fee revenue, not the payee, so it is
+  // correctly excluded.
+  const priorRefunds = await LedgerEntry.find({
+    flow: 'refund',
+    'metadata.refundOf': entryId,
+    userIds: user.id,
+  }).lean();
+  const alreadyRefunded = priorRefunds.reduce(
+    (acc, e) => acc.plus(sumPostings(e, payeeAccount, 'debit', currency)),
+    Money.zero(currency)
+  );
+
+  const originalFee = sumPostings(original, feeRevenue('transfer', currency), 'credit', currency)
+    .plus(sumPostings(original, feeRevenue('split', currency), 'credit', currency));
+  const ageHours = (Date.now() - new Date(original.occurredAt).getTime()) / 3_600_000;
+
+  return {
+    original,
+    payerId,
+    currency,
+    payeeAccount,
+    received,
+    alreadyRefunded,
+    refundable: received.minus(alreadyRefunded),
+    originalFee,
+    feeWindowOpen: ageHours <= FEE_REFUND_WINDOW_HOURS,
+  };
+};
+
+/**
+ * The read-only form: how much of a received payment is still refundable, and
+ * whether the fee would come back with it. Powers the confirmation screen.
+ *
+ * @param {object} params
+ * @param {object} params.user
+ * @param {string} params.entryId
+ * @returns {Promise<object>}
+ */
+export const refundableAmount = async ({ user, entryId }) => {
+  const a = await assessRefund({ user, entryId });
+  return {
+    entryId,
+    received: a.received.toJSON(),
+    alreadyRefunded: a.alreadyRefunded.toJSON(),
+    refundable: a.refundable.toJSON(),
+    fullyRefunded: !a.refundable.isPositive,
+    originalFee: a.originalFee.toJSON(),
+    feeReturnedOnFullRefund: a.originalFee.isPositive && a.feeWindowOpen,
+    feeRefundWindowHours: FEE_REFUND_WINDOW_HOURS,
+    occurredAt: a.original.occurredAt,
+    narrative: a.original.narrative,
+  };
+};
+
+export const refundTransfer = async ({
+  user,
+  entryId,
+  amount,
+  reason,
+  idempotencyKey,
+  device,
+}) => {
+  const {
+    original, payerId, currency, received, alreadyRefunded, refundable,
+    originalFee, feeWindowOpen,
+  } = await assessRefund({ user, entryId });
+  if (!refundable.isPositive) {
+    throw new AppError('This payment has already been refunded in full', 409, 'ALREADY_REFUNDED');
+  }
+
+  const principal = amount ?? refundable;
+  if (principal.currency !== currency) {
+    throw new AppError(`That payment was in ${currency}`, 400, 'CURRENCY_MISMATCH');
+  }
+  if (principal.greaterThan(refundable)) {
+    throw new AppError(
+      `You can refund at most ${refundable.format()} of this payment`,
+      400,
+      'REFUND_EXCEEDS_PAYMENT',
+      {
+        received: received.toJSON(),
+        alreadyRefunded: alreadyRefunded.toJSON(),
+        refundable: refundable.toJSON(),
+      }
+    );
+  }
+
+  // The fee comes back only on a full, prompt refund — and only the share of
+  // it this payee's leg carried, which for an ordinary transfer is all of it
+  // and for a split is proportional to what they received.
+  const isFull = principal.equals(refundable) && alreadyRefunded.isZero;
+
+  let feeRefund = Money.zero(currency);
+  if (originalFee.isPositive && isFull && feeWindowOpen) {
+    const totalToRecipients = (original.metadata?.toUserIds ?? [original.metadata?.toUserId])
+      .filter(Boolean)
+      .reduce(
+        (acc, id) => acc.plus(sumPostings(original, userAvailable(id, currency), 'credit', currency)),
+        Money.zero(currency)
+      );
+    // Apportion by what each payee received, so N partial payees cannot
+    // together claim back more fee than was ever charged.
+    feeRefund = totalToRecipients.isPositive
+      ? originalFee.allocate([
+          Number(received.minor),
+          Number(totalToRecipients.minus(received).minor),
+        ])[0]
+      : originalFee;
+  }
+
+  // A refund is money leaving this customer's balance, so it is gated like
+  // any other outbound movement: the limits are regulatory and apply to the
+  // direction of travel, not the intent behind it.
+  const { risk } = await gate({
+    user,
+    flow: 'transfer',
+    riskFlow: 'refund',
+    amount: principal,
+    counterpartyId: payerId,
+    device,
+  });
+
+  const entry = flows.refund({
+    fromUserId: user.id,
+    toUserId: payerId,
+    amount: principal,
+    feeRefund: feeRefund.isPositive ? feeRefund : undefined,
+    refundOf: entryId,
+    reason: reason?.trim(),
+    metadata: {
+      description: reason?.trim(),
+      riskScore: risk.score,
+      partial: !isFull,
+    },
+  });
+
+  const session = await mongoose.startSession();
+  try {
+    await session.withTransaction(async () => {
+      await ledger.post(entry, { session, idempotencyKey, idempotencyScope: user.id });
+      await outbox.enqueue(
+        {
+          type: 'refund.completed',
+          entryId: entry.id,
+          userId: user.id,
+          payload: {
+            entryId: entry.id,
+            refundOf: entryId,
+            from: user.id,
+            to: payerId,
+            amount: principal.toJSON(),
+            feeRefund: feeRefund.toJSON(),
+          },
+        },
+        { session }
+      );
+    });
+  } catch (err) {
+    if (err?.code === 11000) {
+      throw new AppError('Duplicate refund ignored', 409, 'IDEMPOTENT_REPLAY');
+    }
+    throw err;
+  } finally {
+    await session.endSession();
+  }
+
+  logger.info('Refund completed', {
+    entryId: entry.id,
+    refundOf: entryId,
+    from: user.id,
+    to: payerId,
+    amount: principal.toString(),
+  });
+
+  return {
+    id: entry.id,
+    refundOf: entryId,
+    amount: principal.toJSON(),
+    feeRefund: feeRefund.toJSON(),
+    returned: principal.plus(feeRefund).toJSON(),
+    full: isFull,
+    remainingRefundable: refundable.minus(principal).toJSON(),
     status: 'succeeded',
     createdAt: entry.occurredAt,
   };
@@ -817,6 +1306,31 @@ const settleOrder = async (order, event) => {
   const amount = event.amount ?? Money.fromMinor(order.amount.minor, currency);
   const fee = order.fee ? Money.fromMinor(order.fee.minor, currency) : undefined;
 
+  // The internal rail is not a rail: it has no float, because nothing leaves
+  // the institution. Settling it like one would credit an asset nobody funds
+  // and — far worse — never credit the person being paid. The router picks it
+  // whenever a payout turns out to be addressed to another customer, which is
+  // exactly what it is for, so this case is normal rather than exceptional.
+  const recipientUserId = event.raw?.recipientUserId ?? null;
+  if (order.direction === RailDirection.PAYOUT && order.rail === 'internal') {
+    if (!recipientUserId || recipientUserId === order.userId) {
+      logger.error('Internal payout settled without a usable recipient — parked', {
+        orderId: order.orderId,
+        recipientUserId,
+      });
+      await PaymentOrder.updateOne(
+        { orderId: order.orderId, status: { $nin: ['succeeded', 'failed', 'reversed'] } },
+        {
+          $set: {
+            status: 'needs_reconciliation',
+            failureReason: 'internal payout had no recipient to credit',
+          },
+        }
+      );
+      return { handled: false, reason: 'internal payout without a recipient' };
+    }
+  }
+
   const entry =
     order.direction === RailDirection.COLLECT
       ? flows.deposit({
@@ -826,14 +1340,22 @@ const settleOrder = async (order, event) => {
           railCost: event.railCost,
           metadata: { orderId: order.orderId, receipt: event.receipt, toUserId: order.userId },
         })
-      : flows.settlePayout({
-          userId: order.userId,
-          rail: order.rail,
-          amount,
-          fee,
-          railCost: event.railCost,
-          metadata: { orderId: order.orderId, receipt: event.receipt, fromUserId: order.userId },
-        });
+      : order.rail === 'internal'
+        ? flows.settleInternalPayout({
+            fromUserId: order.userId,
+            toUserId: recipientUserId,
+            amount,
+            fee,
+            metadata: { orderId: order.orderId, receipt: event.receipt },
+          })
+        : flows.settlePayout({
+            userId: order.userId,
+            rail: order.rail,
+            amount,
+            fee,
+            railCost: event.railCost,
+            metadata: { orderId: order.orderId, receipt: event.receipt, fromUserId: order.userId },
+          });
 
   const session = await mongoose.startSession();
   try {

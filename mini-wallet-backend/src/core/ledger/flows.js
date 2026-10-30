@@ -1,8 +1,11 @@
 import { Money } from '../money/Money.js';
 import { JournalEntry, debit, credit } from './JournalEntry.js';
 import {
+  Direction,
+  parseAccount,
   userAvailable,
   userReserved,
+  userVault,
   railFloat,
   railClearing,
   feeRevenue,
@@ -344,6 +347,17 @@ export const railSettlement = ({ rail, amount, metadata = {} }) => {
 export const openingBalance = ({ account, amount, reason = 'opening balance', metadata = {} }) => {
   requirePositive(amount, 'amount');
   const ccy = amount.currency;
+  // This flow CREDITS its target, which only increases a credit-normal account.
+  // Aimed at an asset it would silently post a negative balance — a float that
+  // reads as money owed rather than money held. Assets are funded by
+  // `fundRailFloat` instead, and pointing this at one is refused rather than
+  // quietly inverted.
+  if (parseAccount(account).normalBalance !== Direction.CREDIT) {
+    throw new RangeError(
+      `openingBalance credits its target, so ${account} (debit-normal) would go negative. ` +
+        'Use fundRailFloat for an asset account.'
+    );
+  }
   return new JournalEntry({
     flow: 'opening_balance',
     narrative: reason,
@@ -378,6 +392,222 @@ export const writeOff = ({ account, amount, reason, metadata = {} }) => {
   });
 };
 
+/**
+ * Capitalise our float at a rail from capital, rather than from a customer.
+ *
+ * The counterpart of {@link openingBalance}: that one credits a liability we
+ * owe, this one debits an asset we hold. Both are offset against equity,
+ * because money entering the institution has to be declared as coming from
+ * somewhere.
+ *
+ * @param {object} p
+ * @param {string} p.rail
+ * @param {Money}  p.amount
+ * @param {string} [p.reason]
+ * @param {object} [p.metadata]
+ * @returns {JournalEntry}
+ */
+export const fundRailFloat = ({ rail, amount, reason = 'treasury funding', metadata = {} }) => {
+  requirePositive(amount, 'amount');
+  const ccy = amount.currency;
+  return new JournalEntry({
+    flow: 'treasury.float_funding',
+    narrative: reason,
+    postings: [debit(railFloat(rail, ccy), amount), credit(openingEquity(ccy), amount)],
+    metadata: { ...metadata, rail },
+  });
+};
+
+/**
+ * Settle a payout whose recipient turned out to be another customer.
+ *
+ * The router picks the `internal` rail for these because it is free and
+ * instant — but "internal" is not a rail that holds float, so settling against
+ * one would credit an asset nobody funds and, far worse, never credit the
+ * person being paid. The reservation goes straight to the recipient instead.
+ *
+ * @param {object} p
+ * @param {string} p.fromUserId
+ * @param {string} p.toUserId
+ * @param {Money}  p.amount
+ * @param {Money}  [p.fee]
+ * @param {object} [p.metadata]
+ * @returns {JournalEntry}
+ */
+export const settleInternalPayout = ({ fromUserId, toUserId, amount, fee, metadata = {} }) => {
+  requirePositive(amount, 'amount');
+  if (fromUserId === toUserId) throw new RangeError('Cannot settle a payout to the sender');
+  const ccy = amount.currency;
+  const charged = optionalFee(fee);
+  const total = charged ? amount.plus(charged) : amount;
+
+  const postings = [
+    debit(userReserved(fromUserId, ccy), total),
+    credit(userAvailable(toUserId, ccy), amount),
+  ];
+  if (charged) postings.push(credit(feeRevenue('transfer', ccy), charged));
+
+  return new JournalEntry({
+    flow: 'payout.settle_internal',
+    narrative: `Payout of ${amount} settled in-network`,
+    postings,
+    metadata: { ...metadata, fromUserId, toUserId },
+  });
+};
+
+/**
+ * Pay several people from one balance, in a single entry.
+ *
+ * One debit against N credits. Posting it as one entry rather than N transfers
+ * is the point: a split either happens in full or not at all, and the shares
+ * are proven to sum to the total by the entry's own balance check. Callers
+ * derive the shares with {@link Money#allocate}, which conserves every minor
+ * unit, so the arithmetic cannot leak a cent between recipients.
+ *
+ * @param {object} p
+ * @param {string} p.fromUserId
+ * @param {Array<{userId: string, amount: Money}>} p.shares
+ * @param {Money}  [p.fee]        Charged to the sender on top of the shares.
+ * @param {string} [p.narrative]
+ * @param {object} [p.metadata]
+ * @returns {JournalEntry}
+ */
+export const splitTransfer = ({ fromUserId, shares, fee, narrative, metadata = {} }) => {
+  if (!Array.isArray(shares) || shares.length < 2) {
+    throw new RangeError('A split needs at least two recipients');
+  }
+  const ids = new Set();
+  for (const share of shares) {
+    requirePositive(share.amount, `share for ${share.userId}`);
+    if (share.userId === fromUserId) throw new RangeError('Cannot split to the sender');
+    if (ids.has(share.userId)) throw new RangeError(`Duplicate recipient ${share.userId}`);
+    ids.add(share.userId);
+  }
+  const ccy = shares[0].amount.currency;
+  const total = shares.reduce((acc, s) => acc.plus(s.amount), Money.zero(ccy));
+  const charged = optionalFee(fee);
+
+  const postings = [
+    debit(userAvailable(fromUserId, ccy), charged ? total.plus(charged) : total),
+    ...shares.map((s) => credit(userAvailable(s.userId, ccy), s.amount)),
+  ];
+  if (charged) postings.push(credit(feeRevenue('split', ccy), charged));
+
+  return new JournalEntry({
+    flow: 'transfer.split',
+    narrative: narrative || `Split of ${total} between ${shares.length} people`,
+    postings,
+    metadata: { ...metadata, fromUserId, toUserIds: shares.map((s) => s.userId) },
+  });
+};
+
+/**
+ * Return part of a payment to the person who made it.
+ *
+ * Distinct from reversing the entry. `JournalEntry.reverse()` is all or
+ * nothing and is the right tool for undoing a mistake; a refund is a new
+ * economic event — the payee chooses to give some of it back — and belongs in
+ * the record as its own entry rather than as a rewriting of the first one.
+ *
+ * @param {object} p
+ * @param {string} p.fromUserId   The payee, returning the money.
+ * @param {string} p.toUserId     The original payer.
+ * @param {Money}  p.amount
+ * @param {Money}  [p.feeRefund]  Fee given back out of revenue, if any.
+ * @param {string} [p.refundOf]   Entry id being refunded.
+ * @param {string} [p.reason]
+ * @param {object} [p.metadata]
+ * @returns {JournalEntry}
+ */
+export const refund = ({ fromUserId, toUserId, amount, feeRefund, refundOf, reason, metadata = {} }) => {
+  requirePositive(amount, 'amount');
+  if (fromUserId === toUserId) throw new RangeError('Cannot refund to the same user');
+  const ccy = amount.currency;
+  const givenBack = optionalFee(feeRefund);
+
+  const postings = [
+    debit(userAvailable(fromUserId, ccy), amount),
+    credit(userAvailable(toUserId, ccy), amount),
+  ];
+  if (givenBack) {
+    // Refunding the fee reverses revenue we already recognised.
+    postings.push(
+      debit(feeRevenue('transfer', ccy), givenBack),
+      credit(userAvailable(toUserId, ccy), givenBack)
+    );
+  }
+
+  return new JournalEntry({
+    flow: 'refund',
+    narrative: reason ? `Refund of ${amount}: ${reason}` : `Refund of ${amount}`,
+    postings,
+    metadata: { ...metadata, fromUserId, toUserId, refundOf: refundOf ?? null },
+  });
+};
+
+/**
+ * Move money from a customer's spendable balance into one of their savings
+ * vaults. Both sides are the same customer's liability, so nothing leaves the
+ * institution and nothing is earned — only the bucket changes.
+ *
+ * @param {object} p
+ * @param {string} p.userId
+ * @param {string} p.goalId
+ * @param {Money}  p.amount
+ * @param {object} [p.metadata]
+ * @returns {JournalEntry}
+ */
+export const lockToGoal = ({ userId, goalId, amount, metadata = {} }) => {
+  requirePositive(amount, 'amount');
+  const ccy = amount.currency;
+  return new JournalEntry({
+    flow: 'savings.lock',
+    narrative: `Set aside ${amount}`,
+    postings: [
+      debit(userAvailable(userId, ccy), amount),
+      credit(userVault(userId, goalId, ccy), amount),
+    ],
+    metadata: { ...metadata, userId, goalId, fromUserId: userId, toUserId: userId },
+  });
+};
+
+/**
+ * Take money back out of a vault.
+ *
+ * An early break against a locked goal charges a penalty, which is revenue to
+ * us and is posted as its own leg so the customer's statement shows the gross
+ * amount released and the charge separately, rather than a netted figure they
+ * cannot reconcile.
+ *
+ * @param {object} p
+ * @param {string} p.userId
+ * @param {string} p.goalId
+ * @param {Money}  p.amount     Gross released from the vault.
+ * @param {Money}  [p.penalty]  Deducted from what reaches the spendable balance.
+ * @param {object} [p.metadata]
+ * @returns {JournalEntry}
+ */
+export const releaseFromGoal = ({ userId, goalId, amount, penalty, metadata = {} }) => {
+  requirePositive(amount, 'amount');
+  const ccy = amount.currency;
+  const charged = optionalFee(penalty);
+  if (charged && charged.greaterThanOrEqual(amount)) {
+    throw new RangeError('A break penalty cannot consume the whole release');
+  }
+  const postings = [
+    debit(userVault(userId, goalId, ccy), amount),
+    credit(userAvailable(userId, ccy), charged ? amount.minus(charged) : amount),
+  ];
+  if (charged) postings.push(credit(feeRevenue('savings.break', ccy), charged));
+
+  return new JournalEntry({
+    flow: 'savings.release',
+    narrative: charged ? `Released ${amount} early, penalty ${charged}` : `Released ${amount}`,
+    postings,
+    metadata: { ...metadata, userId, goalId, fromUserId: userId, toUserId: userId },
+  });
+};
+
 export default {
   deposit,
   transfer,
@@ -388,4 +618,10 @@ export default {
   railSettlement,
   openingBalance,
   writeOff,
+  fundRailFloat,
+  settleInternalPayout,
+  splitTransfer,
+  refund,
+  lockToGoal,
+  releaseFromGoal,
 };
