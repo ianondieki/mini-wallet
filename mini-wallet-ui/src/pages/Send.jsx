@@ -3,7 +3,7 @@ import { useNavigate } from 'react-router-dom';
 import { motion, AnimatePresence } from 'framer-motion';
 import { v4 as uuidv4 } from 'uuid';
 import toast from 'react-hot-toast';
-import { Search, X, Check } from 'lucide-react';
+import { Search, X, Check, Wallet } from 'lucide-react';
 import TopBar from '../components/layout/TopBar.jsx';
 import Card from '../components/ui/Card.jsx';
 import Button from '../components/ui/Button.jsx';
@@ -37,7 +37,6 @@ export default function Send() {
   const [confirmOpen, setConfirmOpen] = useState(false);
   const [searchError, setSearchError] = useState('');
 
-  // One idempotency key per page mount (resets on remount / success navigation).
   const idempotencyKey = useRef(uuidv4());
 
   const debouncedQuery = useDebounced(query, 400);
@@ -78,21 +77,39 @@ export default function Send() {
       navigate('/dashboard');
     } catch (err) {
       setConfirmOpen(false);
-      toast.error(err.message || 'Transfer failed');
+      toast.error(err.message || 'Transfer failed. Nothing was sent.');
     }
   };
 
   return (
     <>
-      <TopBar title="Send Money" />
+      <TopBar
+        title="Send money"
+        subtitle="Instant wallet-to-wallet transfer. Free, with a confirmation step."
+      />
 
       <div className="mx-auto max-w-lg">
+        <Card className="mb-4 flex items-center justify-between gap-3 p-3.5">
+          <div className="flex items-center gap-2.5">
+            <span className="flex h-9 w-9 items-center justify-center rounded-xl bg-primary/10 text-primary">
+              <Wallet className="h-4 w-4" />
+            </span>
+            <div>
+              <p className="text-2xs font-semibold uppercase tracking-wider text-text-muted">
+                Your balance
+              </p>
+              <p className="text-sm font-semibold tabular-nums">{formatCurrency(balance)}</p>
+            </div>
+          </div>
+        </Card>
+
         <Card gradientBorder className="p-6">
-          {/* Recipient search */}
-          <label htmlFor="recipient" className="label-caps">Recipient</label>
+          <label htmlFor="recipient" className="label-caps">
+            Recipient
+          </label>
           <div className="relative mt-2">
-            <div className="glow-focus flex items-center gap-2 rounded-xl border border-border bg-surface-2/60 px-3">
-              <Search className="h-4 w-4 text-text-muted" />
+            <div className="glow-focus flex items-center gap-2 rounded-xl border border-border bg-surface-2/80 px-3">
+              <Search className="h-4 w-4 shrink-0 text-text-muted" />
               <input
                 id="recipient"
                 value={query}
@@ -100,7 +117,7 @@ export default function Send() {
                   setQuery(e.target.value);
                   setSearchError('');
                 }}
-                placeholder="Search by email or name"
+                placeholder="Search by name or email"
                 autoComplete="off"
                 className="h-12 w-full bg-transparent text-sm outline-none placeholder:text-text-muted"
               />
@@ -112,13 +129,15 @@ export default function Send() {
                   initial={{ opacity: 0, y: -6 }}
                   animate={{ opacity: 1, y: 0 }}
                   exit={{ opacity: 0, y: -6 }}
-                  className="glass absolute z-20 mt-2 w-full overflow-hidden rounded-xl border border-border"
+                  className="glass absolute z-20 mt-2 w-full overflow-hidden rounded-xl border border-border shadow-elevated"
                 >
                   {searchResults.isLoading && (
                     <p className="px-4 py-3 text-sm text-text-muted">Searching…</p>
                   )}
                   {!searchResults.isLoading && (searchResults.data?.length ?? 0) === 0 && (
-                    <p className="px-4 py-3 text-sm text-text-muted">No users found</p>
+                    <p className="px-4 py-3 text-sm text-text-muted">
+                      No users found. Try another name or email.
+                    </p>
                   )}
                   {searchResults.data?.map((r) => (
                     <button
@@ -140,19 +159,25 @@ export default function Send() {
           </div>
 
           {recipient && (
-            <div className="mt-3 inline-flex items-center gap-2 rounded-full border border-primary/40 bg-primary/10 py-1 pl-1 pr-3">
+            <div className="mt-3 inline-flex items-center gap-2 rounded-full border border-primary/35 bg-primary/10 py-1 pl-1 pr-2.5">
               <Avatar name={recipient.name} email={recipient.email} size="sm" />
               <span className="text-sm font-medium">{recipient.name}</span>
-              <button type="button" aria-label="Remove recipient" onClick={() => setRecipient(null)} className="text-text-muted hover:text-text-primary">
+              <button
+                type="button"
+                aria-label="Remove recipient"
+                onClick={() => setRecipient(null)}
+                className="flex h-7 w-7 items-center justify-center rounded-full text-text-muted transition-colors hover:bg-white/10 hover:text-text-primary"
+              >
                 <X className="h-4 w-4" />
               </button>
             </div>
           )}
 
-          {/* Amount */}
           <div className="mt-6">
-            <label htmlFor="send-amount" className="label-caps">Amount</label>
-            <div className="mt-2 flex items-center gap-2 rounded-xl border border-border bg-surface-2/60 px-4">
+            <label htmlFor="send-amount" className="label-caps">
+              Amount
+            </label>
+            <div className="amount-field mt-2 !justify-start !px-4 !py-0">
               <span className="text-lg font-semibold text-text-muted">KES</span>
               <input
                 id="send-amount"
@@ -160,41 +185,54 @@ export default function Send() {
                 value={amount}
                 onChange={(e) => setAmount(e.target.value.replace(/[^\d]/g, ''))}
                 placeholder="0"
-                className="h-14 w-full bg-transparent text-2xl font-bold outline-none placeholder:text-text-muted"
+                className="h-14 w-full bg-transparent text-2xl font-bold tracking-money outline-none placeholder:text-text-muted/50"
               />
             </div>
-            <div className="mt-2 flex items-center justify-between">
-              <div className="flex gap-2">
+            <div className="mt-2.5 flex flex-wrap items-center justify-between gap-2">
+              <div className="flex flex-wrap gap-2">
                 {QUICK.map((q) => (
-                  <button key={q} type="button" onClick={() => setAmount(String(q))} className="rounded-lg border border-border bg-surface-2/60 px-3 py-1 text-xs text-text-muted hover:text-primary">
+                  <button
+                    key={q}
+                    type="button"
+                    onClick={() => setAmount(String(q))}
+                    className={cn(
+                      'rounded-lg border px-3 py-1.5 text-xs font-medium transition-colors',
+                      Number(amount) === q
+                        ? 'border-primary/50 bg-primary/10 text-primary'
+                        : 'border-border bg-surface-2/60 text-text-muted hover:text-primary'
+                    )}
+                  >
                     {q >= 1000 ? `${q / 1000}k` : q}
                   </button>
                 ))}
               </div>
-              <span className="text-xs text-text-muted">Balance {formatCurrency(balance)}</span>
             </div>
           </div>
 
-          {/* Description */}
           <div className="mt-5">
-            <label htmlFor="desc" className="label-caps">Description (optional)</label>
+            <label htmlFor="desc" className="label-caps">
+              Note <span className="normal-case tracking-normal text-text-muted">(optional)</span>
+            </label>
             <input
               id="desc"
               value={description}
               maxLength={100}
               onChange={(e) => setDescription(e.target.value)}
-              placeholder="What's it for?"
-              className="mt-2 h-11 w-full rounded-xl border border-border bg-surface-2/60 px-4 text-sm outline-none focus:border-primary/50"
+              placeholder="e.g. Lunch, rent share…"
+              className="mt-2 h-11 w-full rounded-xl border border-border bg-surface-2/80 px-4 text-sm outline-none transition-colors focus:border-primary/50"
             />
-            <p className="mt-1 text-right text-xs text-text-muted">{description.length}/100</p>
+            <p className="mt-1 text-right text-2xs text-text-muted">{description.length}/100</p>
           </div>
 
           {recipient && numericAmount > 0 && (
-            <p className="mt-4 text-center text-sm text-text-muted">
-              You're sending{' '}
-              <span className="font-semibold text-accent">{formatCurrency(numericAmount)}</span> to{' '}
+            <div className="mt-4 rounded-xl border border-border bg-surface-2/40 px-4 py-3 text-center text-sm">
+              <span className="text-text-muted">You’re sending </span>
+              <span className="font-semibold tabular-nums text-primary">
+                {formatCurrency(numericAmount)}
+              </span>
+              <span className="text-text-muted"> to </span>
               <span className="font-semibold text-text-primary">{recipient.name}</span>
-            </p>
+            </div>
           )}
 
           {numericAmount > balance && (
@@ -203,32 +241,46 @@ export default function Send() {
             </p>
           )}
 
-          {searchError && <p role="alert" className="mt-3 text-sm text-error">{searchError}</p>}
+          {searchError && (
+            <p role="alert" className="mt-3 text-sm text-error">
+              {searchError}
+            </p>
+          )}
 
           <Button fullWidth size="lg" className="mt-5" disabled={!canSend} onClick={handleSubmit}>
-            Send Money
+            Review transfer
           </Button>
+          <p className="mt-3 text-center text-2xs leading-relaxed text-text-muted">
+            Instant · no transfer fee · you’ll confirm before it sends
+          </p>
         </Card>
       </div>
 
-      {/* Confirmation modal */}
-      <Modal open={confirmOpen} onClose={() => setConfirmOpen(false)} title="Confirm Transfer">
+      <Modal open={confirmOpen} onClose={() => setConfirmOpen(false)} title="Confirm transfer">
         <div className="space-y-3 text-sm">
-          <div className="flex items-center justify-between">
+          <div className="flex items-center justify-between gap-4">
             <span className="text-text-muted">From</span>
-            <span className="font-medium">Your Wallet · {formatCurrency(balance)}</span>
+            <span className="text-right font-medium">Your wallet · {formatCurrency(balance)}</span>
           </div>
-          <div className="flex items-center justify-between">
+          <div className="flex items-center justify-between gap-4">
             <span className="text-text-muted">To</span>
             <span className="text-right font-medium">
               {recipient?.name}
-              <span className="block text-xs text-text-muted">{recipient?.email}</span>
+              <span className="block text-xs font-normal text-text-muted">{recipient?.email}</span>
             </span>
           </div>
+          {description.trim() && (
+            <div className="flex items-center justify-between gap-4">
+              <span className="text-text-muted">Note</span>
+              <span className="max-w-[60%] truncate text-right font-medium">{description.trim()}</span>
+            </div>
+          )}
           <div className="my-1 h-px bg-border" />
-          <div className="flex items-center justify-between">
+          <div className="flex items-center justify-between gap-4">
             <span className="text-text-muted">Amount</span>
-            <span className="text-lg font-bold text-accent">{formatCurrency(numericAmount)}</span>
+            <span className="text-lg font-bold tabular-nums text-primary">
+              {formatCurrency(numericAmount)}
+            </span>
           </div>
         </div>
         <div className="mt-6 flex gap-3">
@@ -236,7 +288,7 @@ export default function Send() {
             Cancel
           </Button>
           <Button fullWidth loading={transferMutation.isPending} onClick={confirmTransfer}>
-            <Check className="h-4 w-4" /> Confirm Transfer
+            <Check className="h-4 w-4" /> Send now
           </Button>
         </div>
       </Modal>

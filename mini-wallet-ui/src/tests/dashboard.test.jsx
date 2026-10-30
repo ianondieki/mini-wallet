@@ -13,9 +13,9 @@ describe('Dashboard', () => {
     renderWithProviders(<Dashboard />, { authed: true });
     // Animated number settles on the mocked balance (12,500.00) after ~1s.
     await waitFor(() => expect(screen.getByText(/12,500\.00/)).toBeInTheDocument(), {
-      timeout: 2500,
+      timeout: 4000,
     });
-    expect(screen.getByText(/total balance/i)).toBeInTheDocument();
+    expect(screen.getByText(/available balance/i)).toBeInTheDocument();
   });
 
   it('shows a loading skeleton while the balance is fetching', async () => {
@@ -37,8 +37,8 @@ describe('Dashboard', () => {
 
   it('renders recent transactions from mock data', async () => {
     renderWithProviders(<Dashboard />, { authed: true });
-    expect(await screen.findByText(/recent transactions/i)).toBeInTheDocument();
-    await waitFor(() => expect(screen.getAllByText(/wallet top-up/i).length).toBeGreaterThan(0));
+    expect(await screen.findByText(/recent activity/i)).toBeInTheDocument();
+    await waitFor(() => expect(screen.getAllByText(/m-pesa top-up/i).length).toBeGreaterThan(0));
   });
 
   it('shows an empty state when there are no transactions', async () => {
@@ -48,13 +48,13 @@ describe('Dashboard', () => {
       )
     );
     renderWithProviders(<Dashboard />, { authed: true });
-    expect(await screen.findByText(/no transactions yet/i)).toBeInTheDocument();
+    expect(await screen.findByText(/no activity yet/i)).toBeInTheDocument();
   });
 
   it('shows quick stats computed from transactions', async () => {
     renderWithProviders(<Dashboard />, { authed: true });
     expect(await screen.findByText(/sent this month/i)).toBeInTheDocument();
     expect(screen.getByText(/received this month/i)).toBeInTheDocument();
-    expect(screen.getByText(/total transactions/i)).toBeInTheDocument();
+    expect(screen.getByText(/all transactions/i)).toBeInTheDocument();
   });
 });

@@ -92,7 +92,7 @@ export const exportToCsv = (filename, rows, columns) => {
 
 /** Deterministic accent colour for an avatar from a seed string. */
 export const avatarColor = (seed = '') => {
-  const palette = ['#f5a623', '#f43f5e', '#f59e0b', '#3b82f6', '#ec4899', '#10b981'];
+  const palette = ['#f5a623', '#e85d75', '#fbbf24', '#60a5fa', '#a78bfa', '#34d399'];
   let hash = 0;
   for (let i = 0; i < seed.length; i += 1) hash = seed.charCodeAt(i) + ((hash << 5) - hash);
   return palette[Math.abs(hash) % palette.length];

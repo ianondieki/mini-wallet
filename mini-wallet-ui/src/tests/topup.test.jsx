@@ -50,7 +50,7 @@ describe('TopUp', () => {
     const user = userEvent.setup();
     renderWithProviders(<TopUp />, { authed: true });
     await advanceToConfirm(user);
-    expect(await screen.findByRole('button', { name: /confirm & send stk push/i })).toBeInTheDocument();
+    expect(await screen.findByRole('button', { name: /send m-pesa prompt/i })).toBeInTheDocument();
   });
 
   it('shows the pending state after sending the STK push', async () => {
@@ -58,8 +58,8 @@ describe('TopUp', () => {
     const user = userEvent.setup();
     renderWithProviders(<TopUp />, { authed: true });
     await advanceToConfirm(user);
-    await user.click(await screen.findByRole('button', { name: /confirm & send stk push/i }));
-    expect(await screen.findByText(/check your phone/i)).toBeInTheDocument();
+    await user.click(await screen.findByRole('button', { name: /send m-pesa prompt/i }));
+    expect(await screen.findByText(/open the m-pesa prompt/i)).toBeInTheDocument();
   });
 
   it('polls status and shows the success animation when confirmed', async () => {
@@ -68,7 +68,7 @@ describe('TopUp', () => {
     const user = userEvent.setup();
     renderWithProviders(<TopUp />, { authed: true });
     await advanceToConfirm(user);
-    await user.click(await screen.findByRole('button', { name: /confirm & send stk push/i }));
+    await user.click(await screen.findByRole('button', { name: /send m-pesa prompt/i }));
     expect(await screen.findByText(/top-up complete/i, {}, { timeout: 6000 })).toBeInTheDocument();
   }, 8000);
 
@@ -81,8 +81,8 @@ describe('TopUp', () => {
     const user = userEvent.setup();
     renderWithProviders(<TopUp />, { authed: true });
     await advanceToConfirm(user);
-    await user.click(await screen.findByRole('button', { name: /confirm & send stk push/i }));
-    expect(await screen.findByText(/payment failed/i)).toBeInTheDocument();
+    await user.click(await screen.findByRole('button', { name: /send m-pesa prompt/i }));
+    expect(await screen.findByText(/didn’t go through|didn't go through/i)).toBeInTheDocument();
     expect(await screen.findByText(/cancelled by user/i)).toBeInTheDocument();
   });
 });

@@ -4,21 +4,23 @@ import { cn } from '../../lib/utils.js';
 
 const VARIANTS = {
   primary:
-    'bg-primary text-bg font-semibold hover:bg-primary-dim shadow-[0_0_24px_-6px_rgba(245,166,35,0.6)]',
+    'bg-primary text-bg font-semibold hover:bg-primary-dim shadow-[0_1px_0_rgba(255,255,255,0.12)_inset,0_8px_20px_-8px_rgba(245,166,35,0.55)]',
   secondary: 'bg-secondary text-white font-semibold hover:bg-secondary/90',
-  ghost: 'bg-white/5 text-text-primary hover:bg-white/10 border border-border',
-  danger: 'bg-error/90 text-white font-semibold hover:bg-error',
-  subtle: 'bg-transparent text-text-muted hover:text-text-primary',
+  ghost:
+    'bg-white/[0.04] text-text-primary hover:bg-white/[0.08] border border-border hover:border-border-strong',
+  danger: 'bg-error/90 text-bg font-semibold hover:bg-error',
+  subtle: 'bg-transparent text-text-muted hover:text-text-primary hover:bg-white/[0.04]',
 };
 
 const SIZES = {
-  sm: 'h-9 px-3 text-sm',
-  md: 'h-11 px-5 text-sm',
-  lg: 'h-12 px-6 text-base',
+  sm: 'h-9 min-h-[36px] px-3.5 text-sm',
+  md: 'h-11 min-h-[44px] px-5 text-sm',
+  lg: 'h-12 min-h-[48px] px-6 text-base',
 };
 
 /**
  * Primary button. Forwards arbitrary props (onClick, type, disabled, aria-*).
+ * Min heights meet 44px touch targets on md/lg.
  */
 export default function Button({
   children,
@@ -33,13 +35,13 @@ export default function Button({
   const isDisabled = disabled || loading;
   return (
     <motion.button
-      whileHover={isDisabled ? undefined : { scale: 1.02 }}
-      whileTap={isDisabled ? undefined : { scale: 0.97 }}
-      transition={{ type: 'spring', stiffness: 400, damping: 25 }}
+      whileHover={isDisabled ? undefined : { scale: 1.015 }}
+      whileTap={isDisabled ? undefined : { scale: 0.98 }}
+      transition={{ type: 'spring', stiffness: 420, damping: 28 }}
       disabled={isDisabled}
       className={cn(
         'inline-flex items-center justify-center gap-2 rounded-xl transition-colors',
-        'disabled:opacity-50 disabled:cursor-not-allowed select-none',
+        'disabled:opacity-45 disabled:cursor-not-allowed select-none',
         VARIANTS[variant],
         SIZES[size],
         fullWidth && 'w-full',

@@ -19,12 +19,15 @@ export default function Transactions() {
   const [page, setPage] = useState(1);
   const [selected, setSelected] = useState(null);
 
-  // Type/status are server-side; search/date are applied client-side.
-  const query = useTransactions({ page, limit: PAGE_SIZE, type: filters.type, status: filters.status });
+  const query = useTransactions({
+    page,
+    limit: PAGE_SIZE,
+    type: filters.type,
+    status: filters.status,
+  });
   const all = query.data?.transactions ?? [];
   const pagination = query.data?.pagination ?? { totalPages: 1, total: 0 };
 
-  // Summary across the loaded rows (successful only).
   const summary = useMemo(() => {
     let inflow = 0;
     let outflow = 0;
@@ -86,44 +89,52 @@ export default function Transactions() {
 
   return (
     <>
-      <TopBar title="Transactions" />
+      <TopBar
+        title="Activity"
+        subtitle="Search, filter, and export every movement in your wallet."
+      />
 
-      {/* Summary across loaded rows */}
       <div className="mb-5 grid gap-3 sm:grid-cols-3">
         <SummaryCard icon={ArrowDownLeft} label="Money in" value={summary.inflow} tone="success" />
         <SummaryCard icon={ArrowUpRight} label="Money out" value={summary.outflow} tone="error" />
         <SummaryCard icon={Wallet} label="Net flow" value={summary.net} tone="primary" signed />
       </div>
 
-      <div className="mb-5 flex items-center justify-between">
-        <p className="text-sm text-text-muted">{pagination.total} total transactions</p>
+      <div className="mb-5 flex flex-wrap items-center justify-between gap-3">
+        <p className="text-sm text-text-muted">
+          <span className="font-semibold tabular-nums text-text-secondary">{pagination.total}</span>{' '}
+          total transactions
+        </p>
         <Button variant="ghost" size="sm" onClick={handleExport} disabled={!visible.length}>
           <Download className="h-4 w-4" /> Export CSV
         </Button>
       </div>
 
       <div className="mb-6">
-        <TransactionFilters filters={filters} onChange={patch} onClear={() => setFilters(EMPTY)} />
+        <TransactionFilters
+          filters={filters}
+          onChange={patch}
+          onClear={() => setFilters(EMPTY)}
+        />
       </div>
 
       {query.isLoading ? (
         <div className="space-y-2">
           {Array.from({ length: 6 }).map((_, i) => (
-            <Skeleton key={i} className="h-14 w-full" />
+            <Skeleton key={i} className="h-14 w-full rounded-xl" />
           ))}
         </div>
       ) : (
         <TransactionTable transactions={visible} onRowClick={setSelected} />
       )}
 
-      {/* Pagination */}
       {pagination.totalPages > 1 && (
-        <div className="mt-6 flex items-center justify-center gap-1">
+        <nav className="mt-6 flex items-center justify-center gap-1" aria-label="Pagination">
           <button
             type="button"
             disabled={page === 1}
             onClick={() => setPage((p) => Math.max(1, p - 1))}
-            className="rounded-lg px-3 py-1.5 text-sm text-text-muted disabled:opacity-40 hover:text-text-primary"
+            className="rounded-lg px-3 py-2 text-sm font-medium text-text-muted transition-colors hover:text-text-primary disabled:opacity-40"
           >
             Prev
           </button>
@@ -132,10 +143,12 @@ export default function Transactions() {
               key={n}
               type="button"
               onClick={() => setPage(n)}
-              aria-current={page === n}
+              aria-current={page === n ? 'page' : undefined}
               className={cn(
-                'h-9 w-9 rounded-lg text-sm transition-colors',
-                page === n ? 'bg-primary text-bg' : 'text-text-muted hover:bg-white/5'
+                'flex h-10 w-10 items-center justify-center rounded-lg text-sm font-medium transition-colors',
+                page === n
+                  ? 'bg-primary text-bg'
+                  : 'text-text-muted hover:bg-white/5 hover:text-text-primary'
               )}
             >
               {n}
@@ -145,11 +158,11 @@ export default function Transactions() {
             type="button"
             disabled={page === pagination.totalPages}
             onClick={() => setPage((p) => Math.min(pagination.totalPages, p + 1))}
-            className="rounded-lg px-3 py-1.5 text-sm text-text-muted disabled:opacity-40 hover:text-text-primary"
+            className="rounded-lg px-3 py-2 text-sm font-medium text-text-muted transition-colors hover:text-text-primary disabled:opacity-40"
           >
             Next
           </button>
-        </div>
+        </nav>
       )}
 
       <Modal open={Boolean(selected)} onClose={() => setSelected(null)} title="Transaction detail">
@@ -166,13 +179,19 @@ function SummaryCard({ icon: Icon, label, value, tone, signed }) {
     tone === 'success' ? 'bg-success/10' : tone === 'error' ? 'bg-error/10' : 'bg-primary/10';
   const prefix = signed && value > 0 ? '+' : '';
   return (
-    <div className="flex items-center gap-3 rounded-2xl border border-border bg-surface-2/40 p-4">
-      <span className={cn('inline-flex h-10 w-10 items-center justify-center rounded-xl', tintBg, toneClass)}>
-        <Icon className="h-5 w-5" />
+    <div className="flex items-center gap-3 rounded-2xl border border-border bg-surface-2/50 p-4">
+      <span
+        className={cn(
+          'inline-flex h-10 w-10 shrink-0 items-center justify-center rounded-xl',
+          tintBg,
+          toneClass
+        )}
+      >
+        <Icon className="h-5 w-5" strokeWidth={1.75} />
       </span>
       <div className="min-w-0">
         <p className="label-caps">{label}</p>
-        <p className={cn('text-lg font-bold tabular-nums', signed && toneClass)}>
+        <p className={cn('text-lg font-bold tabular-nums tracking-money', signed && toneClass)}>
           {prefix}
           {formatCurrency(value, { withSymbol: false })}
         </p>

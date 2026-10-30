@@ -51,14 +51,14 @@ export default function TransactionFilters({ filters, onChange, onClear }) {
   const hasFilters = filters.search || filters.type || filters.status || filters.date;
 
   return (
-    <div className="space-y-4 rounded-2xl border border-border bg-surface-2/40 p-4">
-      <div className="glow-focus flex items-center gap-2 rounded-xl border border-border bg-surface-2/60 px-3">
-        <Search className="h-4 w-4 text-text-muted" />
+    <div className="space-y-4 rounded-2xl border border-border bg-surface-2/50 p-4">
+      <div className="glow-focus flex items-center gap-2 rounded-xl border border-border bg-surface-2/80 px-3">
+        <Search className="h-4 w-4 shrink-0 text-text-muted" />
         <input
           type="search"
           value={filters.search}
           onChange={(e) => onChange({ search: e.target.value })}
-          placeholder="Search description or reference…"
+          placeholder="Search people, notes, or M-Pesa receipt…"
           aria-label="Search transactions"
           className="h-11 w-full bg-transparent text-sm outline-none placeholder:text-text-muted"
         />

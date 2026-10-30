@@ -20,8 +20,8 @@ const Input = forwardRef(function Input(
     <div className="w-full">
       <div
         className={cn(
-          'glow-focus relative rounded-xl border bg-surface-2/60 transition-colors',
-          error ? 'border-error/60' : 'border-border'
+          'glow-focus relative rounded-xl border bg-surface-2/80 transition-colors',
+          error ? 'border-error/50' : 'border-border'
         )}
       >
         <input
@@ -32,7 +32,7 @@ const Input = forwardRef(function Input(
           aria-invalid={Boolean(error)}
           aria-describedby={error ? `${inputId}-error` : hint ? `${inputId}-hint` : undefined}
           className={cn(
-            'peer h-14 w-full rounded-xl bg-transparent px-4 pt-5 pb-1 text-sm text-text-primary',
+            'peer h-14 w-full rounded-xl bg-transparent px-4 pt-5 pb-1.5 text-sm text-text-primary',
             'placeholder-transparent outline-none',
             isPassword && 'pr-12',
             className
@@ -44,8 +44,8 @@ const Input = forwardRef(function Input(
             htmlFor={inputId}
             className={cn(
               'pointer-events-none absolute left-4 top-4 text-text-muted transition-all duration-200',
-              'peer-focus:top-2 peer-focus:text-[11px] peer-focus:text-primary',
-              'peer-[:not(:placeholder-shown)]:top-2 peer-[:not(:placeholder-shown)]:text-[11px]'
+              'peer-focus:top-2 peer-focus:text-[11px] peer-focus:font-medium peer-focus:text-primary',
+              'peer-[:not(:placeholder-shown)]:top-2 peer-[:not(:placeholder-shown)]:text-[11px] peer-[:not(:placeholder-shown)]:font-medium'
             )}
           >
             {label}
@@ -56,7 +56,7 @@ const Input = forwardRef(function Input(
             type="button"
             onClick={() => setShow((s) => !s)}
             aria-label={show ? 'Hide password' : 'Show password'}
-            className="absolute right-3 top-1/2 -translate-y-1/2 text-text-muted hover:text-text-primary"
+            className="absolute right-2 top-1/2 flex h-10 w-10 -translate-y-1/2 items-center justify-center rounded-lg text-text-muted hover:bg-white/5 hover:text-text-primary"
           >
             {show ? <EyeOff className="h-5 w-5" /> : <Eye className="h-5 w-5" />}
           </button>
@@ -68,7 +68,7 @@ const Input = forwardRef(function Input(
         </p>
       ) : (
         hint && (
-          <p id={`${inputId}-hint`} className="mt-1.5 px-1 text-xs text-text-muted">
+          <p id={`${inputId}-hint`} className="mt-1.5 px-1 text-xs leading-relaxed text-text-muted">
             {hint}
           </p>
         )

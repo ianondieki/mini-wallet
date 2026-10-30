@@ -92,16 +92,16 @@ export default function BalanceChart({ balance = 0, transactions = [] }) {
                 <stop offset="100%" stopColor="#f5a623" stopOpacity={0} />
               </linearGradient>
             </defs>
-            <CartesianGrid strokeDasharray="3 3" stroke="#1e1e2e" vertical={false} />
+            <CartesianGrid strokeDasharray="3 3" stroke="#23233a" vertical={false} />
             <XAxis
               dataKey="date"
-              tick={{ fill: '#64748b', fontSize: 11 }}
+              tick={{ fill: '#8b8ba3', fontSize: 11 }}
               tickLine={false}
               axisLine={false}
               minTickGap={20}
             />
             <YAxis
-              tick={{ fill: '#64748b', fontSize: 11 }}
+              tick={{ fill: '#8b8ba3', fontSize: 11 }}
               tickLine={false}
               axisLine={false}
               width={56}
@@ -112,7 +112,7 @@ export default function BalanceChart({ balance = 0, transactions = [] }) {
               type="monotone"
               dataKey="balance"
               stroke="#f5a623"
-              strokeWidth={2.5}
+              strokeWidth={2}
               fill="url(#balanceFill)"
             />
           </AreaChart>

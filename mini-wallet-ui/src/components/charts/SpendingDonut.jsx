@@ -10,9 +10,9 @@ import { formatCurrency } from '../../lib/utils.js';
  */
 const SLICES = [
   { key: 'topup', label: 'Top-ups', color: '#f5a623' },
-  { key: 'received', label: 'Received', color: '#10b981' },
-  { key: 'sent', label: 'Sent', color: '#f43f5e' },
-  { key: 'withdrawal', label: 'Withdrawals', color: '#fbbf24' },
+  { key: 'received', label: 'Received', color: '#34d399' },
+  { key: 'sent', label: 'Sent', color: '#f87171' },
+  { key: 'withdrawal', label: 'Withdrawals', color: '#e85d75' },
 ];
 
 function DonutTooltip({ active, payload }) {

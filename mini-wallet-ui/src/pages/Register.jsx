@@ -20,7 +20,7 @@ const schema = z
     email: z.string().email('Enter a valid email'),
     phone: z
       .string()
-      .refine((v) => phoneRegex.test(v.replace(/\s/g, '')), 'Use format 2547XXXXXXXX'),
+      .refine((v) => phoneRegex.test(v.replace(/\s/g, '')), 'Use a Kenyan number, e.g. 07XX XXX XXX'),
     password: z
       .string()
       .min(8, 'At least 8 characters')
@@ -58,46 +58,58 @@ export default function Register() {
         phone: normalizePhone(values.phone),
         password: values.password,
       });
-      toast.success('Account created — welcome!');
+      toast.success('You’re in — wallet ready to go.');
       navigate('/dashboard', { replace: true });
     } catch (err) {
-      toast.error(err.message || 'Registration failed');
+      toast.error(err.message || 'We couldn’t create your account. Try again.');
     }
   };
 
   return (
-    <div className="relative flex min-h-screen items-center justify-center p-4">
+    <div className="relative flex min-h-screen items-center justify-center p-4 py-10">
       <Background dotGrid />
-      <motion.div className="relative z-10 w-full max-w-md" initial={{ opacity: 0, y: 20 }} animate={{ opacity: 1, y: 0 }}>
-        <Card gradientBorder className="p-8">
+      <motion.div
+        className="relative z-10 w-full max-w-md"
+        initial={{ opacity: 0, y: 20 }}
+        animate={{ opacity: 1, y: 0 }}
+      >
+        <Card gradientBorder elevated className="p-8">
           <div className="mb-6 flex flex-col items-center text-center">
             <img src={logo} alt="" className="mb-3 h-12 w-12" />
             <span className="text-xl font-bold tracking-tight">Mini Wallet</span>
-            <div className="mt-4 flex items-center gap-1.5">
-              <span className="h-1.5 w-6 rounded-full bg-primary" />
-              <span className="text-xs text-text-muted">Step 1 of 1</span>
-            </div>
-            <h1 className="mt-3 text-lg font-semibold">Create your account</h1>
+            <h1 className="mt-5 text-lg font-semibold tracking-tight">Create your account</h1>
+            <p className="mt-1.5 max-w-xs text-sm leading-relaxed text-text-muted">
+              One wallet for M-Pesa top-ups, peer transfers, and withdrawals.
+            </p>
           </div>
 
           <form onSubmit={handleSubmit(onSubmit)} className="space-y-4" noValidate>
-            <Input label="Full name" error={errors.name?.message} {...register('name')} />
-            <Input label="Email" type="email" error={errors.email?.message} {...register('email')} />
+            <Input label="Full name" autoComplete="name" error={errors.name?.message} {...register('name')} />
+            <Input
+              label="Email"
+              type="email"
+              autoComplete="email"
+              error={errors.email?.message}
+              {...register('email')}
+            />
             <Input
               label="Phone"
+              type="tel"
+              autoComplete="tel"
               error={errors.phone?.message}
-              hint="Kenyan number, e.g. 0712345678 or 254712345678"
+              hint="Kenyan mobile — used for M-Pesa top-ups and cash-outs"
               {...register('phone')}
             />
             <div>
               <Input
                 label="Password"
                 type="password"
+                autoComplete="new-password"
                 error={errors.password?.message}
                 {...register('password')}
               />
-              <div className="mt-2 flex items-center gap-2">
-                <div className="flex flex-1 gap-1">
+              <div className="mt-2.5 flex items-center gap-2 px-0.5">
+                <div className="flex flex-1 gap-1" role="meter" aria-label="Password strength" aria-valuenow={pwScore} aria-valuemin={0} aria-valuemax={4}>
                   {[0, 1, 2, 3].map((i) => (
                     <span
                       key={i}
@@ -108,12 +120,15 @@ export default function Register() {
                     />
                   ))}
                 </div>
-                <span className="w-12 text-right text-xs text-text-muted">{STRENGTH[pwScore]}</span>
+                <span className="w-12 text-right text-2xs font-medium text-text-muted">
+                  {STRENGTH[pwScore]}
+                </span>
               </div>
             </div>
             <Input
               label="Confirm password"
               type="password"
+              autoComplete="new-password"
               error={errors.confirmPassword?.message}
               {...register('confirmPassword')}
             />
@@ -123,10 +138,18 @@ export default function Register() {
             </Button>
           </form>
 
-          <p className="mt-6 text-center text-sm text-text-muted">
+          <p className="mt-5 text-center text-2xs leading-relaxed text-text-muted">
+            By continuing you agree to use this wallet responsibly. Your session is protected with
+            short-lived access tokens.
+          </p>
+
+          <p className="mt-4 text-center text-sm text-text-muted">
             Already have an account?{' '}
-            <Link to="/login" className="font-medium text-primary hover:underline">
-              Login
+            <Link
+              to="/login"
+              className="font-semibold text-primary transition-colors hover:text-primary-dim"
+            >
+              Sign in
             </Link>
           </p>
         </Card>

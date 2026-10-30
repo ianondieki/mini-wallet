@@ -54,7 +54,7 @@ describe('Send Money', () => {
     renderWithProviders(<Send />, { authed: true });
     await selectGrace(user);
     await user.type(screen.getByLabelText(/^amount$/i), '500');
-    await user.click(screen.getByRole('button', { name: /^send money$/i }));
+    await user.click(screen.getByRole('button', { name: /review transfer/i }));
 
     expect(await screen.findByRole('dialog', { name: /confirm transfer/i })).toBeInTheDocument();
     await user.click(screen.getByRole('button', { name: /cancel/i }));
@@ -92,9 +92,8 @@ describe('Send Money', () => {
     renderWithProviders(<Send />, { authed: true });
     await selectGrace(user);
     await user.type(screen.getByLabelText(/^amount$/i), '500');
-    await user.click(screen.getByRole('button', { name: /^send money$/i }));
-    await user.click(await screen.findByRole('button', { name: /confirm transfer/i }));
-
+    await user.click(screen.getByRole('button', { name: /review transfer/i }));
+    await user.click(await screen.findByRole('button', { name: /send now/i }));
     expect(await screen.findByText(/sent to grace hopper/i)).toBeInTheDocument();
     await waitFor(() => expect(capturedKey).toBeTruthy());
     expect(capturedKey).toMatch(/[0-9a-f-]{36}/i);

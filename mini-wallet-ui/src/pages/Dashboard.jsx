@@ -2,7 +2,16 @@ import { useMemo } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { motion } from 'framer-motion';
 import { isAfter, startOfMonth } from 'date-fns';
-import { ArrowUpRight, ArrowDownLeft, Activity, Plus, Send, Wifi } from 'lucide-react';
+import {
+  ArrowUpRight,
+  ArrowDownLeft,
+  Activity,
+  Plus,
+  Send,
+  ShieldCheck,
+  Phone,
+  ArrowRight,
+} from 'lucide-react';
 import TopBar from '../components/layout/TopBar.jsx';
 import Card from '../components/ui/Card.jsx';
 import Button from '../components/ui/Button.jsx';
@@ -17,14 +26,6 @@ import { useWallet } from '../hooks/useWallet.js';
 import { useTransactions } from '../hooks/useTransactions.js';
 import { useAuth } from '../hooks/useAuth.js';
 import { formatCurrency } from '../lib/utils.js';
-
-/** Derive a stable, masked "card number" from the user id for display flair. */
-function maskedCard(seed = '') {
-  let hash = 0;
-  for (let i = 0; i < seed.length; i += 1) hash = seed.charCodeAt(i) + ((hash << 5) - hash);
-  const last4 = String(Math.abs(hash) % 10000).padStart(4, '0');
-  return `7383  ••••  ••••  ${last4}`;
-}
 
 export default function Dashboard() {
   const navigate = useNavigate();
@@ -52,104 +53,129 @@ export default function Dashboard() {
 
   return (
     <>
-      <TopBar title="Dashboard" />
+      <TopBar
+        title="Home"
+        greet
+        subtitle="Your balance, activity, and shortcuts — all in one place."
+      />
 
-      {/* Hero balance — styled as a virtual card */}
+      {/* Hero balance */}
       <Card
         gradientBorder
         glow
+        elevated
         className="relative overflow-hidden p-6 sm:p-8"
         initial={{ opacity: 0, y: 16 }}
         animate={{ opacity: 1, y: 0 }}
       >
         <div
-          className="pointer-events-none absolute inset-0 opacity-60"
+          className="pointer-events-none absolute inset-0 opacity-70"
           style={{
             background:
-              'radial-gradient(120% 120% at 80% 0%, rgba(245,166,35,0.20), transparent 50%), radial-gradient(120% 120% at 0% 100%, rgba(244,63,94,0.16), transparent 50%)',
+              'radial-gradient(100% 90% at 90% 0%, rgba(245,166,35,0.14), transparent 55%), radial-gradient(90% 80% at 0% 100%, rgba(232,93,117,0.08), transparent 50%)',
           }}
         />
-        <div className="relative flex flex-col gap-6 sm:flex-row sm:items-start sm:justify-between">
-          <div>
-            <p className="label-caps">Total balance</p>
+        <div className="relative flex flex-col gap-8 lg:flex-row lg:items-stretch lg:justify-between">
+          <div className="flex-1">
+            <div className="flex flex-wrap items-center gap-2">
+              <p className="label-caps">Available balance</p>
+              <span className="inline-flex items-center gap-1 rounded-full bg-success/10 px-2 py-0.5 text-2xs font-semibold text-success">
+                <span className="h-1.5 w-1.5 rounded-full bg-success" aria-hidden="true" />
+                Live
+              </span>
+            </div>
+
             {balanceQuery.isLoading ? (
-              <Skeleton className="mt-2 h-12 w-56" />
+              <Skeleton className="mt-3 h-14 w-64" />
             ) : (
-              <p className="mt-1 text-4xl font-bold tracking-tight sm:text-5xl">
-                <span className="text-text-muted">KES </span>
-                <AnimatedNumber value={balance} format={(n) => formatCurrency(n, { withSymbol: false })} />
+              <p
+                className="mt-2 text-4xl font-bold tracking-money text-text-primary sm:text-5xl"
+                data-money
+              >
+                <span className="mr-1.5 text-lg font-semibold text-text-muted sm:text-xl">KES</span>
+                <AnimatedNumber
+                  value={balance}
+                  format={(n) => formatCurrency(n, { withSymbol: false })}
+                />
               </p>
             )}
-            <p className="mt-2 text-sm text-text-muted">Available to spend or transfer</p>
+            <p className="mt-2 max-w-sm text-sm leading-relaxed text-text-muted">
+              Ready to send, withdraw, or top up via M-Pesa. Balances update as soon as payments
+              clear.
+            </p>
 
             <div className="mt-6 flex flex-wrap gap-3">
               <Button onClick={() => navigate('/topup')}>
-                <Plus className="h-4 w-4" /> Top Up
+                <Plus className="h-4 w-4" /> Top up
               </Button>
               <Button variant="ghost" onClick={() => navigate('/send')}>
-                <Send className="h-4 w-4" /> Send Money
+                <Send className="h-4 w-4" /> Send money
+              </Button>
+              <Button variant="subtle" onClick={() => navigate('/withdraw')}>
+                Withdraw
               </Button>
             </div>
           </div>
 
-          {/* Card-information mini-panel — premium gold card */}
-          <div
-            className="relative w-full max-w-xs shrink-0 overflow-hidden rounded-2xl p-5 shadow-card"
-            style={{
-              background:
-                'linear-gradient(135deg, #fbbf24 0%, #f5a623 45%, #d98c1a 100%)',
-            }}
-          >
-            <div
-              className="pointer-events-none absolute inset-0 opacity-30"
-              style={{
-                background:
-                  'radial-gradient(120% 80% at 100% 0%, rgba(255,255,255,0.55), transparent 60%)',
-              }}
-            />
-            <div className="relative text-black">
-              <div className="flex items-center justify-between">
-                <span className="text-[11px] font-semibold uppercase tracking-wider text-black/70">
-                  Wallet card
-                </span>
-                <Wifi className="h-4 w-4 rotate-90 text-black/70" />
-              </div>
-              <p className="mt-4 font-mono text-sm font-medium tracking-widest text-black/90">
-                {maskedCard(user?.id || user?.email || 'wallet')}
+          {/* Account snapshot — real data only, no fake card numbers */}
+          <div className="flex w-full max-w-sm flex-col justify-between rounded-2xl border border-white/10 bg-black/25 p-5 backdrop-blur-sm lg:w-72">
+            <div>
+              <p className="label-caps">Account</p>
+              <p className="mt-2 truncate text-base font-semibold text-text-primary">
+                {user?.name || 'Your wallet'}
               </p>
-              <div className="mt-5 flex items-end justify-between">
-                <div>
-                  <p className="text-[11px] font-semibold uppercase tracking-wider text-black/60">
-                    Holder
-                  </p>
-                  <p className="truncate text-sm font-semibold">{user?.name || 'You'}</p>
-                </div>
-                <div className="text-right">
-                  <p className="text-[11px] font-semibold uppercase tracking-wider text-black/60">
-                    Currency
-                  </p>
-                  <p className="text-sm font-semibold">KES 🇰🇪</p>
-                </div>
-              </div>
-              <div className="mt-4">
-                <span className="inline-flex items-center gap-1.5 rounded-full bg-black/15 px-2.5 py-0.5 text-xs font-semibold text-black/80">
-                  <span className="h-1.5 w-1.5 rounded-full bg-black/70" />
-                  Active
+              <p className="mt-0.5 truncate text-sm text-text-muted">{user?.email}</p>
+            </div>
+
+            <div className="mt-5 space-y-3 border-t border-white/10 pt-4">
+              <div className="flex items-center gap-2.5 text-sm text-text-secondary">
+                <Phone className="h-4 w-4 shrink-0 text-text-muted" />
+                <span className="truncate font-mono text-xs tracking-wide">
+                  {user?.phone || 'No phone on file'}
                 </span>
+              </div>
+              <div className="flex items-center gap-2.5 text-sm text-text-secondary">
+                <ShieldCheck className="h-4 w-4 shrink-0 text-success" />
+                <span className="text-xs">Protected with secure sessions</span>
+              </div>
+              <div className="flex items-center justify-between">
+                <span className="text-2xs font-semibold uppercase tracking-wider text-text-muted">
+                  Currency
+                </span>
+                <span className="text-sm font-semibold tabular-nums">KES</span>
               </div>
             </div>
           </div>
         </div>
       </Card>
 
-      {/* Quick stats */}
+      {/* Quick stats — real month data only */}
       <div className="mt-6 grid gap-4 sm:grid-cols-3">
-        <StatsCard icon={ArrowUpRight} label="Sent this month" value={stats.sent} tint="red" change={-4} />
-        <StatsCard icon={ArrowDownLeft} label="Received this month" value={stats.received} tint="green" change={12} />
-        <StatsCard icon={Activity} label="Total transactions" value={totalCount} tint="gold" change={8} currency={false} />
+        <StatsCard
+          icon={ArrowUpRight}
+          label="Sent this month"
+          value={stats.sent}
+          tint="red"
+          hint="Successful transfers & withdrawals"
+        />
+        <StatsCard
+          icon={ArrowDownLeft}
+          label="Received this month"
+          value={stats.received}
+          tint="green"
+          hint="Top-ups & incoming transfers"
+        />
+        <StatsCard
+          icon={Activity}
+          label="All transactions"
+          value={totalCount}
+          tint="gold"
+          currency={false}
+          hint="Lifetime + pending history"
+        />
       </div>
 
-      {/* Activities chart + Statistics donut */}
+      {/* Charts */}
       <div className="mt-6 grid gap-4 lg:grid-cols-3">
         <div className="lg:col-span-2">
           <BalanceChart balance={balance} transactions={transactions} />
@@ -159,17 +185,20 @@ export default function Dashboard() {
         </div>
       </div>
 
-      {/* Recent transactions + spending breakdown */}
+      {/* Recent + categories */}
       <div className="mt-6 grid gap-4 lg:grid-cols-3">
         <Card className="p-5 lg:col-span-2">
-          <div className="mb-2 flex items-center justify-between">
-            <h2 className="text-sm font-semibold">Recent transactions</h2>
+          <div className="mb-3 flex items-center justify-between gap-3">
+            <div>
+              <h2 className="section-title">Recent activity</h2>
+              <p className="mt-0.5 text-2xs text-text-muted">Your latest wallet movements</p>
+            </div>
             <button
               type="button"
               onClick={() => navigate('/transactions')}
-              className="text-xs font-medium text-primary hover:underline"
+              className="inline-flex items-center gap-1 text-xs font-semibold text-primary transition-colors hover:text-primary-dim"
             >
-              View all →
+              View all <ArrowRight className="h-3.5 w-3.5" />
             </button>
           </div>
 
@@ -187,16 +216,25 @@ export default function Dashboard() {
               ))}
             </div>
           ) : recent.length ? (
-            <motion.div initial="hidden" animate="show" className="divide-y divide-border/60">
+            <motion.div initial="hidden" animate="show" className="divide-y divide-border/50">
               {recent.map((t, i) => (
                 <TransactionRow key={t.id} transaction={t} index={i} />
               ))}
             </motion.div>
           ) : (
-            <div className="flex flex-col items-center gap-2 py-10 text-center">
-              <span className="rounded-2xl bg-white/5 p-4 text-2xl">💸</span>
-              <p className="font-medium">No transactions yet</p>
-              <p className="text-sm text-text-muted">Top up your wallet to see activity here.</p>
+            <div className="flex flex-col items-center gap-3 py-12 text-center">
+              <span className="flex h-14 w-14 items-center justify-center rounded-2xl bg-primary/10 text-primary">
+                <Plus className="h-6 w-6" />
+              </span>
+              <div>
+                <p className="font-semibold text-text-primary">No activity yet</p>
+                <p className="mt-1 max-w-xs text-sm leading-relaxed text-text-muted">
+                  Top up with M-Pesa to fund your wallet — your first transaction will show up here.
+                </p>
+              </div>
+              <Button size="sm" className="mt-1" onClick={() => navigate('/topup')}>
+                Top up now
+              </Button>
             </div>
           )}
         </Card>

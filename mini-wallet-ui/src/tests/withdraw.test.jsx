@@ -34,7 +34,7 @@ describe('Withdraw', () => {
     await user.click(confirm);
 
     await waitFor(async () =>
-      expect((await screen.findAllByText(/withdrawal initiated/i)).length).toBeGreaterThan(0)
+      expect((await screen.findAllByText(/withdrawal started/i)).length).toBeGreaterThan(0)
     );
   });
 });

@@ -10,9 +10,9 @@ import { formatCurrency } from '../../lib/utils.js';
  */
 const CATS = [
   { key: 'topup', label: 'Top-ups', color: '#f5a623', Icon: Plus },
-  { key: 'received', label: 'Received', color: '#10b981', Icon: ArrowDownLeft },
-  { key: 'sent', label: 'Sent', color: '#f43f5e', Icon: ArrowUpRight },
-  { key: 'withdrawal', label: 'Withdrawals', color: '#fbbf24', Icon: Banknote },
+  { key: 'received', label: 'Received', color: '#34d399', Icon: ArrowDownLeft },
+  { key: 'sent', label: 'Sent', color: '#f87171', Icon: ArrowUpRight },
+  { key: 'withdrawal', label: 'Withdrawals', color: '#e85d75', Icon: Banknote },
 ];
 
 export default function CategoryBars({ transactions = [] }) {

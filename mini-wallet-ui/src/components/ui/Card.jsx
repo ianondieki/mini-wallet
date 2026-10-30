@@ -15,7 +15,8 @@ const getMotionTag = (tag) => {
 
 /**
  * Glassmorphism card. `gradientBorder` adds the masked gradient ring;
- * `glow` adds the slow pulsing primary glow; `hoverGlow` lights up on hover.
+ * `glow` adds the slow pulsing primary glow; `hoverGlow` lights up on hover;
+ * `elevated` uses a stronger glass treatment for heroes/modals.
  */
 export default function Card({
   children,
@@ -23,6 +24,7 @@ export default function Card({
   gradientBorder = false,
   glow = false,
   hoverGlow = false,
+  elevated = false,
   as = 'div',
   ...props
 }) {
@@ -30,7 +32,8 @@ export default function Card({
   return (
     <MotionTag
       className={cn(
-        'glass rounded-2xl',
+        elevated ? 'glass-elevated' : 'glass',
+        'rounded-2xl',
         gradientBorder && 'gradient-border',
         glow && 'animate-pulse-glow',
         hoverGlow && 'glow-hover',

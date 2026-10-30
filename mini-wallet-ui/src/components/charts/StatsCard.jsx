@@ -1,5 +1,4 @@
 import { motion } from 'framer-motion';
-import { TrendingUp, TrendingDown } from 'lucide-react';
 import Card from '../ui/Card.jsx';
 import AnimatedNumber from '../ui/AnimatedNumber.jsx';
 import { cn, formatCurrency } from '../../lib/utils.js';
@@ -12,43 +11,33 @@ const TINTS = {
 };
 
 /**
- * Quick-stat card with an icon, animated figure and percentage-change badge.
+ * Quick-stat card with an icon and animated figure.
+ * Omits fabricated % change badges — only real metrics build trust.
  */
 export default function StatsCard({
   icon: Icon,
   label,
   value,
   tint = 'green',
-  change = 0,
   currency = true,
+  hint,
 }) {
-  const up = change >= 0;
   return (
     <Card hoverGlow className="p-5">
       <div className="mb-3 flex items-center justify-between">
-        <span className={cn('rounded-xl p-2', TINTS[tint])}>
-          <Icon className="h-5 w-5" />
+        <span className={cn('rounded-xl p-2.5', TINTS[tint])}>
+          <Icon className="h-5 w-5" strokeWidth={1.75} />
         </span>
-        {change !== null && (
-          <span
-            className={cn(
-              'inline-flex items-center gap-1 rounded-full px-2 py-0.5 text-xs font-medium',
-              up ? 'bg-success/10 text-success' : 'bg-error/10 text-error'
-            )}
-          >
-            {up ? <TrendingUp className="h-3 w-3" /> : <TrendingDown className="h-3 w-3" />}
-            {Math.abs(change)}%
-          </span>
-        )}
       </div>
       <p className="label-caps">{label}</p>
-      <p className="mt-1 text-2xl font-bold tracking-tight">
+      <p className="mt-1.5 text-2xl font-bold tracking-money tabular-nums text-text-primary">
         {currency ? (
           <AnimatedNumber value={value} format={(n) => formatCurrency(n)} />
         ) : (
           <AnimatedNumber value={value} format={(n) => Math.round(n).toString()} />
         )}
       </p>
+      {hint && <p className="mt-1 text-2xs text-text-muted">{hint}</p>}
     </Card>
   );
 }

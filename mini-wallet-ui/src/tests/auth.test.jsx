@@ -12,7 +12,7 @@ const API = 'http://localhost:3000';
 describe('Login', () => {
   it('renders the login form', async () => {
     renderWithProviders(<Login />, { route: '/login' });
-    expect(await screen.findByRole('heading', { name: /sign in to your wallet/i })).toBeInTheDocument();
+    expect(await screen.findByRole('heading', { name: /welcome back/i })).toBeInTheDocument();
     expect(screen.getByLabelText(/email/i)).toBeInTheDocument();
     expect(screen.getByLabelText(/^password$/i)).toBeInTheDocument();
   });
@@ -57,7 +57,7 @@ describe('Register', () => {
     const phone = await screen.findByLabelText(/phone/i);
     await user.type(phone, '12345');
     await user.tab();
-    expect(await screen.findByText(/2547XXXXXXXX/i)).toBeInTheDocument();
+    expect(await screen.findByText(/kenyan number/i)).toBeInTheDocument();
   });
 
   it('updates the password strength meter', async () => {
